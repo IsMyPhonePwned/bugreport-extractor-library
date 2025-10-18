@@ -34,14 +34,6 @@ cargo build --release
 
 Run multiple parsers from the command line:
 
-You can specify the --parser-type argument multiple times to run different parsers on the same file, and save the output in a json file directly.
-
-# Run both the Csv and Text parsers concurrently on the same file
-./target/release/bel-cli --file-path large_data.csv --parser-type csv --parser-type text
-
-# Use the Regex parser to find all email addresses in a file
-./target/release/bel-cli--file-path logs.txt --parser-type regex --regex-pattern "[a-zA-Z0-9._%+-]+@[a-zA-Z0-9.-]+\.[a-zA-Z]{2,}"
-
 ## Add new parser
 
 
