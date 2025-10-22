@@ -83,7 +83,7 @@ mod tests {
         let file_content: Arc<[u8]> = Arc::from("some test data".as_bytes().to_vec());
         let parsers_to_run: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = vec![
             (
-                ParserType::Text,
+                ParserType::Header, // Use a valid enum variant
                 Box::new(MockParser {
                     should_succeed: false,
                 }),
@@ -92,12 +92,54 @@ mod tests {
 
         let results = run_parsers_concurrently(file_content, parsers_to_run);
 
-        assert_eq!(results.len(), 1, "Should return two results, one for each parser.");
+        assert_eq!(results.len(), 1, "Should return one result for the parser.");
 
         // Check the failing parser's result
         let failure_result = results
             .iter()
-            .find(|(pt, _, _)| *pt == ParserType::Text)
+            .find(|(pt, _, _)| *pt == ParserType::Header)
+            .unwrap();
+        assert!(failure_result.1.is_err(), "The failing parser should return Err.");
+        assert_eq!(
+            failure_result.1.as_ref().unwrap_err().to_string(),
+            "Parsing failed as expected"
+        );
+    }
+
+    #[test]
+    fn test_run_parsers_concurrently_success_and_failure() {
+        let file_content: Arc<[u8]> = Arc::from("data".as_bytes().to_vec());
+        let parsers_to_run: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = vec![
+            (
+                ParserType::Memory,
+                Box::new(MockParser {
+                    should_succeed: true,
+                }),
+            ),
+            (
+                ParserType::Header,
+                Box::new(MockParser {
+                    should_succeed: false,
+                }),
+            ),
+        ];
+
+        let results = run_parsers_concurrently(file_content, parsers_to_run);
+
+        assert_eq!(results.len(), 2, "Should return a result for each parser.");
+
+        // Check the succeeding parser
+        let success_result = results
+            .iter()
+            .find(|(pt, _, _)| *pt == ParserType::Memory)
+            .unwrap();
+        assert!(success_result.1.is_ok(), "The succeeding parser should return Ok.");
+        assert_eq!(success_result.1.as_ref().unwrap(), &json!({ "status": "ok" }));
+
+        // Check the failing parser
+        let failure_result = results
+            .iter()
+            .find(|(pt, _, _)| *pt == ParserType::Header)
             .unwrap();
         assert!(failure_result.1.is_err(), "The failing parser should return Err.");
         assert_eq!(

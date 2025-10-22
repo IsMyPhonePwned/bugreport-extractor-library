@@ -54,3 +54,95 @@ impl Parser for HeaderParser {
         Ok(json!(captures))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parsers::Parser;
+    use serde_json::json;
+
+    #[test]
+    fn test_parse_single_header() {
+        let data = b"
+========================================================
+== dumpstate: 2025-10-22 09:30:00
+========================================================
+
+Build: XYZ
+Line 2
+Line 3
+------ next section ------
+        ";
+        let parser = HeaderParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([
+            {
+                "section_title": "2025-10-22 09:30:00",
+                "content_lines": [
+                    "Build: XYZ",
+                    "Line 2",
+                    "Line 3"
+                ]
+            }
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_multiple_headers() {
+        let data = b"
+Junk before
+========================================================
+== dumpstate: 2025-10-22 09:30:00
+========================================================
+
+Content 1
+Line 2
+========================================================
+== dumpstate: 2025-10-22 09:35:00
+========================================================
+
+Content 2
+Line B
+------ next section ------
+Junk after
+        ";
+        let parser = HeaderParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([
+            {
+                "section_title": "2025-10-22 09:30:00",
+                "content_lines": [
+                    "Content 1",
+                    "Line 2"
+                ]
+            },
+            {
+                "section_title": "2025-10-22 09:35:00",
+                "content_lines": [
+                    "Content 2",
+                    "Line B"
+                ]
+            }
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_no_headers() {
+        let data = b"This is a file with no dumpstate headers.";
+        let parser = HeaderParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_empty_input() {
+        let data = b"";
+        let parser = HeaderParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([]);
+        assert_eq!(result, expected);
+    }
+}

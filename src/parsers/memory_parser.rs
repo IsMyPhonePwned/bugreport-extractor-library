@@ -61,3 +61,91 @@ impl Parser for MemoryParser {
         Ok(json!(results))
     }
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::parsers::Parser;
+    use serde_json::json;
+
+    #[test]
+    fn test_parse_single_memory_block() {
+        let data = b"
+------ MEMORY INFO (/proc/meminfo) ------
+MemTotal:       12126388 kB
+MemFree:         1330080 kB
+MemAvailable:    5913264 kB
+RandomKey:      Some String Value
+MalformedLine
+------ END ------
+        ";
+        let parser = MemoryParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([
+            {
+                "MemTotal": 12126388,
+                "MemFree": 1330080,
+                "MemAvailable": 5913264,
+                "RandomKey": "Some String Value"
+            }
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_multiple_memory_blocks() {
+        let data = b"
+Junk before first block
+------ MEMORY INFO (/proc/meminfo) ------
+MemTotal:       1000 kB
+MemFree:         500 kB
+------ END ------
+Some text in between
+------ MEMORY INFO (/proc/meminfo) ------
+MemTotal:       2000 kB
+MemFree:        1500 kB
+------ END ------
+Junk after last block
+        ";
+        let parser = MemoryParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([
+            {
+                "MemTotal": 1000,
+                "MemFree": 500,
+            },
+            {
+                "MemTotal": 2000,
+                "MemFree": 1500,
+            }
+        ]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_no_memory_blocks() {
+        let data = b"Some random data without any memory info blocks.";
+        let parser = MemoryParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_parse_empty_input() {
+        let data = b"";
+        let parser = MemoryParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([]);
+        assert_eq!(result, expected);
+    }
+
+    #[test]
+    fn test_block_with_no_content() {
+        let data = b"------ MEMORY INFO (/proc/meminfo) ------\n------ END ------";
+        let parser = MemoryParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let expected = json!([]); // An empty map is created but not pushed to results.
+        assert_eq!(result, expected);
+    }
+}

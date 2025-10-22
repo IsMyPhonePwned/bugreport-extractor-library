@@ -23,18 +23,28 @@ This Rust project provides a framework for parsing [Android Bugreport](https://s
 
 ## Build
 
-How to Use
 Build the project:
 
 ```
 cargo build --release
 ```
 
+## Parsers (WIP)
+
+### Header
+### Memory
+
 ## Usage
 
 Run multiple parsers from the command line:
 
-## Add new parser
+```
+cargo run --release -- --file-path=dumpstate.txt --parser-type header --parser-type memory
+```
+
+it will allow the header and the memory parse to run.
+
+### Add new parser
 
 
 The process is the same as before, as the core trait has not changed.
