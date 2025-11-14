@@ -9,7 +9,7 @@ use memmap2::Mmap;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    Parser as DataParser, ParserType, HeaderParser, MemoryParser
+    Parser as DataParser, ParserType, HeaderParser, MemoryParser, BatteryParser, PackageParser, ProcessParser
 };
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
@@ -46,6 +46,18 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Memory => {
                 let memory_parser = MemoryParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(memory_parser)));
+            },
+            ParserType::Battery => {
+                let battery_parser = BatteryParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(battery_parser)));
+            },
+            ParserType::Package => {
+                let package_parser = PackageParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(package_parser)));
+            },
+            ParserType::Process => {
+                let process_parser = ProcessParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(process_parser)));
             }
         }
     }
@@ -85,7 +97,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     println!("Successfully parsed a JSON object.");
                 }
                 // Uncomment the line below if you want to see the full JSON output.
-                // println!("{}", serde_json::to_string_pretty(&json_output)?);
+                 println!("{}", serde_json::to_string_pretty(&json_output)?);
             }
             Err(e) => {
                 eprintln!("Error: {}", e);

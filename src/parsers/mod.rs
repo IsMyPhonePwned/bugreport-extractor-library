@@ -3,9 +3,16 @@ use std::error::Error;
 
 mod header_parser;
 mod memory_parser;
+mod battery_parser;
+mod package_parser;
+mod process_parser;
 
 pub use header_parser::HeaderParser;
 pub use memory_parser::MemoryParser;
+pub use battery_parser::BatteryParser;
+pub use package_parser::PackageParser;
+pub use process_parser::ProcessParser;
+
 
 /// The core trait for all parsers.
 /// Any new parser must implement this trait.
@@ -20,6 +27,9 @@ pub trait Parser {
 pub enum ParserType {
     Header,
     Memory,
+    Battery,
+    Package,
+    Process
 }
 
 
