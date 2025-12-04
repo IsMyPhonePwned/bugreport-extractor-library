@@ -9,7 +9,7 @@ use memmap2::Mmap;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    Parser as DataParser, ParserType, HeaderParser, MemoryParser, BatteryParser, PackageParser, ProcessParser
+    Parser as DataParser, ParserType, HeaderParser, MemoryParser, BatteryParser, PackageParser, ProcessParser, PowerParser, UsbParser
 };
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
@@ -58,7 +58,15 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Process => {
                 let process_parser = ProcessParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(process_parser)));
-            }
+            },
+            ParserType::Power => {
+                let power_parser = PowerParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(power_parser)));
+            },
+            ParserType::Usb => {
+                let usb_parser = UsbParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(usb_parser)));
+            },
         }
     }
 

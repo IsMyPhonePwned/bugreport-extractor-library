@@ -29,10 +29,14 @@ Build the project:
 cargo build --release
 ```
 
-## Parsers (WIP)
+## Parsers
 
-### Header
-### Memory
+- Header
+- Memory
+- Package
+- Power
+- Process
+- USB
 
 ## Usage
 
