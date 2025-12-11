@@ -5,7 +5,13 @@ use std::sync::Arc;
 use std::fs::File;
 
 use memmap2::Mmap;
+use std::path::PathBuf;
 
+use tracing::{info, warn};
+use tracing_subscriber;
+
+use sigma_zero::engine::SigmaEngine;
+use sigma_zero::models::{LogEntry, RuleMatch};
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
@@ -27,10 +33,47 @@ struct Args {
     /// The regex pattern to use with the 'regex' parser type
     #[arg(long)]
     regex_pattern: Option<String>,
+
+    /// Path to directory containing Sigma rules (YAML files)
+    #[arg(short, long)]
+    rules_dir: PathBuf,
+
+    /// Enable verbose logging
+    #[arg(short, long)]
+    verbose: bool,
+
+    /// Number of parallel workers (defaults to number of CPU cores)
+    #[arg(short, long)]
+    workers: Option<usize>,
+
+    /// Only show matches at or above this level (low, medium, high, critical)
+    #[arg(short, long)]
+    min_level: Option<String>,
+
+    /// Output format: json, text, or silent
+    #[arg(short, long, default_value = "text")]
+    output_format: String,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let args = Args::parse();
+
+        // Initialize logging
+    let log_level = if args.verbose {
+        tracing::Level::DEBUG
+    } else {
+        tracing::Level::INFO
+    };
+
+    tracing_subscriber::fmt()
+        .with_max_level(log_level)
+        .init();
+
+    let mut engine = SigmaEngine::new(args.workers);
+
+    info!("Loading Sigma rules...");
+    let rules_loaded = engine.load_rules(&args.rules_dir)?;
+    info!("Loaded {} Sigma rules", rules_loaded);
 
     let start_time = Instant::now();
 
@@ -105,7 +148,36 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     println!("Successfully parsed a JSON object.");
                 }
                 // Uncomment the line below if you want to see the full JSON output.
-                 println!("{}", serde_json::to_string_pretty(&json_output)?);
+                // println!("{}", serde_json::to_string_pretty(&json_output)?);
+
+                // Convert each output to a valid Sigma Zero entry !
+                if parser_type == ParserType::Package {
+                    let first_array = json_output.as_array().unwrap();
+                    if let Some(first_item) = first_array.get(0) {
+                        // 2. Access the "install_logs" field and try to view it as an Array
+                        if let Some(logs) = first_item["install_logs"].as_array() {
+                            // 3. Iterate over the logs
+                            for log_entry in logs {
+                                let log_entry: LogEntry = match serde_json::from_str(&serde_json::to_string_pretty(&log_entry)?) {
+                                        Ok(entry) => entry,
+                                        Err(e) => {
+                                            warn!("Failed to parse log line {}: ", e);
+                                            continue;
+                                        }
+                                    };
+                                    
+                                    let matches = engine.evaluate_log_entry(&log_entry);
+                                    for rule_match in matches {
+                                        if should_output_match(&rule_match, &args.min_level) {
+                                            output_match(&rule_match, &args.output_format);
+                                        }
+                                    }
+                            }
+                        } else {
+                            println!("'install_logs' is missing or not an array");
+                        }
+                    }
+                }
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -114,4 +186,56 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     Ok(())
+}
+
+
+fn should_output_match(rule_match: &RuleMatch, min_level: &Option<String>) -> bool {
+    if let Some(ref min) = min_level {
+        if let Some(ref level) = rule_match.level {
+            return level_priority(level) >= level_priority(min);
+        }
+        return false;
+    }
+    true
+}
+
+fn level_priority(level: &str) -> u8 {
+    match level.to_lowercase().as_str() {
+        "critical" => 4,
+        "high" => 3,
+        "medium" => 2,
+        "low" => 1,
+        _ => 0,
+    }
+}
+
+fn output_match(rule_match: &RuleMatch, format: &str) {
+    match format {
+        "json" => {
+            if let Ok(json) = serde_json::to_string(rule_match) {
+                println!("{}", json);
+            }
+        }
+        "silent" => {
+            // No output, just count
+        }
+        _ => {
+            // Text format (default)
+            let level = rule_match.level.as_deref().unwrap_or("unknown");
+            let level_icon = match level {
+                "critical" => "🔥",
+                "high" => "🚨",
+                "medium" => "⚠️ ",
+                "low" => "ℹ️ ",
+                _ => "• ",
+            };
+            
+            println!("{} [{}] {} ({})", 
+                level_icon,
+                level.to_uppercase(),
+                rule_match.rule_title,
+                rule_match.rule_id.as_deref().unwrap_or("unknown")
+            );
+        }
+    }
 }

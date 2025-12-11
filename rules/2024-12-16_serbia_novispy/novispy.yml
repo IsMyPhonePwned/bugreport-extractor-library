@@ -1,0 +1,15 @@
+title: NoviSpy Android spyware
+id: 5b3d6582-6c45-463a-92f6-8657dc199a0c
+description: Detects NoviSpy Android spyware => https://github.com/AmnestyTech/investigations/tree/master/2024-12-16_serbia_novispy
+status: experimental
+level: critical
+detection:
+  selection_suspicious_package:
+    pkg:
+      - 'com.serv.services'
+      - 'com.accesibilityservice'
+      - 'com.li.activity'
+      - 'com.gu.activity'
+  condition: selection_suspicious_package
+tags:
+  - attack.execution

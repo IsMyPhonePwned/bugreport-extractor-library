@@ -20,4 +20,7 @@ clap = { version = "4.0", features = ["derive"] }
 rayon = "1.8"
 memmap2 = "0.9"
 regex = "1"
-
+sigma-zero = { git = "https://github.com/ping2A/sigmazero.git" }
+# Logging
+tracing = "0.1"
+tracing-subscriber = "0.3"

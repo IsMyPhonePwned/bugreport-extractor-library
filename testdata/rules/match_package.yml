@@ -1,0 +1,13 @@
+title: Test rules to match specific package name
+id: 99999999-9999-9999-9999-999999999999
+description: Detects potential APT activity combining multiple indicators
+status: experimental
+level: low
+detection:
+  selection_suspicious_package:
+    pkg:
+      - 'com.google.android.gm'
+      - '*cmd.exe'
+  condition: selection_suspicious_package
+tags:
+  - attack.execution
