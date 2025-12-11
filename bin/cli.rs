@@ -19,6 +19,7 @@ use bugreport_extractor_library::parsers::{
 };
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
+use bugreport_extractor_library::progress::ProgressTracker;
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
 #[derive(Parser, Debug)]
@@ -59,6 +60,10 @@ struct Args {
     /// Show detailed log entry information with matches (displays specific fields from matched logs)
     #[arg(long)]
     show_log_details: bool,
+
+    /// Disable progress indicators (useful for scripting or when output is redirected)
+    #[arg(long)]
+    no_progress: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -75,15 +80,26 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .with_max_level(log_level)
         .init();
 
+    // Initialize progress tracker (disabled if no_progress flag or in silent mode)
+    let show_progress = !args.no_progress && args.output_format != "silent" && !args.verbose;
+    let progress = ProgressTracker::new(show_progress);
+
     let start_time = Instant::now();
 
     // Initialize Sigma engine if rules directory provided and not skipped
     let mut engine_opt: Option<SigmaEngine> = None;
     if !args.no_sigma {
         if let Some(ref rules_dir) = args.rules_dir {
+            let rule_pb = progress.create_rule_loading_progress();
             info!("Loading Sigma rules from {:?}...", rules_dir);
+            
             let mut engine = SigmaEngine::new(args.workers);
             let rules_loaded = engine.load_rules(rules_dir)?;
+            
+            ProgressTracker::finish_with_message(
+                rule_pb, 
+                &format!("✓ Loaded {} Sigma rules", rules_loaded)
+            );
             info!("Loaded {} Sigma rules", rules_loaded);
             engine_opt = Some(engine);
         } else {
@@ -127,26 +143,50 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 
-    println!(
-        "Processing file '{}' with {:?} parsers concurrently...",
-        args.file_path, args.parser_type
-    );
+    if !show_progress {
+        println!(
+            "Processing file '{}' with {:?} parsers concurrently...",
+            args.file_path, args.parser_type
+        );
+    }
 
     // Memory-map the file for efficient, concurrent reading.
     let file = File::open(&args.file_path)?;
+    let file_size = file.metadata()?.len();
+    
+    // Show file loading progress
+    let file_pb = progress.create_file_progress(file_size);
+    
     // SAFETY: The file is not modified while the map is open, which is a requirement for memmap.
     let mmap = unsafe { Mmap::map(&file)? };
+    
+    ProgressTracker::set_position(&file_pb, file_size);
+    ProgressTracker::finish_with_message(
+        file_pb, 
+        &format!("✓ Loaded {} ({:.2} MB)", args.file_path, file_size as f64 / 1_048_576.0)
+    );
 
     // The file content is shared across threads using an Arc.
     let file_content: Arc<[u8]> = Arc::from(&mmap[..]);
 
+    // Create progress bar for parser execution
+    let parser_pb = progress.create_multi_parser_progress(parsers_to_run.len());
+
     // Process the file using all selected parsers in parallel.
     let results = run_parsers_concurrently(file_content, parsers_to_run);
-
-    println!(
-        "\n--- All parsers finished in {:?} ---",
-        start_time.elapsed()
+    
+    ProgressTracker::set_position(&parser_pb, results.len() as u64);
+    ProgressTracker::finish_with_message(
+        parser_pb,
+        &format!("✓ All {} parsers completed in {:?}", results.len(), start_time.elapsed())
     );
+
+    if !show_progress {
+        println!(
+            "\n--- All parsers finished in {:?} ---",
+            start_time.elapsed()
+        );
+    }
 
     // Print the JSON result from each parser.
     for (parser_type, result, duration) in &results {
@@ -170,22 +210,39 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     // === Sigma Rule Evaluation ===
     if let Some(mut engine) = engine_opt {
-        println!("\n=== Starting Sigma Rule Evaluation ===\n");
+        if !show_progress {
+            println!("\n=== Starting Sigma Rule Evaluation ===\n");
+        }
         
         let mut stats = SigmaStats::new();
         
         // Extract log entries from all parser results
         let all_entries = sigma_integration::extract_all_log_entries(&results);
         
+        // Calculate total entries for progress tracking
+        let total_entries: usize = all_entries.iter().map(|(_, entries)| entries.len()).sum();
+        stats.total_logs_evaluated = total_entries;
+        
+        // Create overall progress bar
+        let overall_pb = progress.create_sigma_progress(total_entries);
+        
         // Evaluate each set of log entries
         for (parser_type, log_entries) in all_entries {
+            if log_entries.is_empty() {
+                continue;
+            }
+            
             info!(
                 "Evaluating {} log entries from {:?} parser",
                 log_entries.len(),
                 parser_type
             );
             
-            stats.total_logs_evaluated += log_entries.len();
+            // Create per-parser progress bar
+            let parser_pb = progress.create_parser_sigma_progress(
+                &format!("{:?}", parser_type),
+                log_entries.len()
+            );
             
             for log_entry in log_entries {
                 let matches = engine.evaluate_log_entry(&log_entry);
@@ -201,8 +258,19 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                         stats.record_match(&rule_match, &format!("{:?}", parser_type));
                     }
                 }
+                
+                // Update progress bars
+                ProgressTracker::inc(&parser_pb, 1);
+                ProgressTracker::inc(&overall_pb, 1);
             }
+            
+            ProgressTracker::finish_and_clear(parser_pb);
         }
+        
+        ProgressTracker::finish_with_message(
+            overall_pb,
+            &format!("✓ Evaluated {} log entries, found {} matches", total_entries, stats.total_matches)
+        );
         
         // Print summary unless in silent mode
         if args.output_format != "silent" {

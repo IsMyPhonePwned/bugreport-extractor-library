@@ -9,6 +9,7 @@ use std::sync::Arc;
 pub mod parsers;
 pub mod sigma_integration;
 pub mod sigma_output;
+pub mod progress;
 
 /// Runs multiple parsers over the same file content concurrently using Rayon.
 ///
