@@ -85,6 +85,103 @@ pub fn output_match(rule_match: &RuleMatch, format: &str) {
     }
 }
 
+/// Outputs a rule match with detailed log entry information
+/// 
+/// This function displays the rule match along with comprehensive details from the
+/// original log entry that triggered the match. Use --show-log-details flag to enable.
+pub fn output_match_with_log(
+    rule_match: &RuleMatch, 
+    log_entry: &sigma_zero::models::LogEntry,
+    format: &str
+) {
+    match format {
+        "json" => {
+            // Combine match and log in JSON output
+            if let (Ok(match_json), Ok(log_json)) = (
+                serde_json::to_value(rule_match),
+                serde_json::to_value(log_entry)
+            ) {
+                let combined = serde_json::json!({
+                    "rule_id": match_json.get("rule_id"),
+                    "rule_title": match_json.get("rule_title"),
+                    "level": match_json.get("level"),
+                    "timestamp": match_json.get("timestamp"),
+                    "log_entry": log_json
+                });
+                if let Ok(json_str) = serde_json::to_string(&combined) {
+                    println!("{}", json_str);
+                }
+            }
+        }
+        "silent" => {
+            // No output, just count
+        }
+        _ => {
+            // Text format with comprehensive log details
+            let level = rule_match.level.as_deref().unwrap_or("unknown");
+            let level_icon = match level {
+                "critical" => "🔥",
+                "high" => "🚨",
+                "medium" => "⚠️ ",
+                "low" => "ℹ️ ",
+                _ => "• ",
+            };
+            
+            println!(
+                "{} [{}] {} ({})", 
+                level_icon,
+                level.to_uppercase(),
+                rule_match.rule_title,
+                rule_match.rule_id.as_deref().unwrap_or("unknown")
+            );
+            
+            // Display comprehensive log entry details
+            if let Ok(log_json) = serde_json::to_value(log_entry) {
+                if let Some(obj) = log_json.as_object() {
+                    // Display all non-empty fields from the log entry
+                    for (key, value) in obj {
+                        // Skip internal/verbose fields
+                        if key.starts_with('_') {
+                            continue;
+                        }
+                        
+                        // Format the value appropriately
+                        let display_value = match value {
+                            serde_json::Value::String(s) => s.clone(),
+                            serde_json::Value::Number(n) => n.to_string(),
+                            serde_json::Value::Bool(b) => b.to_string(),
+                            serde_json::Value::Array(arr) => {
+                                if arr.len() <= 3 {
+                                    format!("{:?}", arr)
+                                } else {
+                                    format!("[{} items]", arr.len())
+                                }
+                            },
+                            serde_json::Value::Object(_) => "[object]".to_string(),
+                            serde_json::Value::Null => continue, // Skip null values
+                        };
+                        
+                        // Pretty print the key name
+                        let display_key = key.replace('_', " ")
+                            .split_whitespace()
+                            .map(|word| {
+                                let mut chars = word.chars();
+                                match chars.next() {
+                                    None => String::new(),
+                                    Some(first) => first.to_uppercase().collect::<String>() + chars.as_str(),
+                                }
+                            })
+                            .collect::<Vec<_>>()
+                            .join(" ");
+                        
+                        println!("  {}: {}", display_key, display_value);
+                    }
+                }
+            }
+        }
+    }
+}
+
 /// Statistics for Sigma rule evaluation
 #[derive(Debug, Default)]
 pub struct SigmaStats {

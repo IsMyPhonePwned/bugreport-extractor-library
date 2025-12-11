@@ -18,7 +18,7 @@ use bugreport_extractor_library::parsers::{
     PackageParser, ProcessParser, PowerParser, UsbParser
 };
 use bugreport_extractor_library::sigma_integration;
-use bugreport_extractor_library::sigma_output::{should_output_match, output_match, SigmaStats};
+use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
 #[derive(Parser, Debug)]
@@ -55,6 +55,10 @@ struct Args {
     /// Skip Sigma rule evaluation (only parse and output data)
     #[arg(long)]
     no_sigma: bool,
+
+    /// Show detailed log entry information with matches (displays specific fields from matched logs)
+    #[arg(long)]
+    show_log_details: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -188,7 +192,12 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 
                 for rule_match in matches {
                     if should_output_match(&rule_match, &args.min_level) {
-                        output_match(&rule_match, &args.output_format);
+                        // Use detailed output if flag is set
+                        if args.show_log_details {
+                            output_match_with_log(&rule_match, &log_entry, &args.output_format);
+                        } else {
+                            output_match(&rule_match, &args.output_format);
+                        }
                         stats.record_match(&rule_match, &format!("{:?}", parser_type));
                     }
                 }
