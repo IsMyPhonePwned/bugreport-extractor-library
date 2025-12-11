@@ -11,12 +11,14 @@ use tracing::{info, warn};
 use tracing_subscriber;
 
 use sigma_zero::engine::SigmaEngine;
-use sigma_zero::models::{LogEntry, RuleMatch};
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    Parser as DataParser, ParserType, HeaderParser, MemoryParser, BatteryParser, PackageParser, ProcessParser, PowerParser, UsbParser
+    Parser as DataParser, ParserType, HeaderParser, MemoryParser, BatteryParser, 
+    PackageParser, ProcessParser, PowerParser, UsbParser
 };
+use bugreport_extractor_library::sigma_integration;
+use bugreport_extractor_library::sigma_output::{should_output_match, output_match, SigmaStats};
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
 #[derive(Parser, Debug)]
@@ -30,13 +32,9 @@ struct Args {
     #[arg(short, long, value_enum, num_args = 1.., required = true)]
     parser_type: Vec<ParserType>,
 
-    /// The regex pattern to use with the 'regex' parser type
-    #[arg(long)]
-    regex_pattern: Option<String>,
-
     /// Path to directory containing Sigma rules (YAML files)
     #[arg(short, long)]
-    rules_dir: PathBuf,
+    rules_dir: Option<PathBuf>,
 
     /// Enable verbose logging
     #[arg(short, long)]
@@ -53,12 +51,16 @@ struct Args {
     /// Output format: json, text, or silent
     #[arg(short, long, default_value = "text")]
     output_format: String,
+
+    /// Skip Sigma rule evaluation (only parse and output data)
+    #[arg(long)]
+    no_sigma: bool,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let args = Args::parse();
 
-        // Initialize logging
+    // Initialize logging
     let log_level = if args.verbose {
         tracing::Level::DEBUG
     } else {
@@ -69,13 +71,21 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         .with_max_level(log_level)
         .init();
 
-    let mut engine = SigmaEngine::new(args.workers);
-
-    info!("Loading Sigma rules...");
-    let rules_loaded = engine.load_rules(&args.rules_dir)?;
-    info!("Loaded {} Sigma rules", rules_loaded);
-
     let start_time = Instant::now();
+
+    // Initialize Sigma engine if rules directory provided and not skipped
+    let mut engine_opt: Option<SigmaEngine> = None;
+    if !args.no_sigma {
+        if let Some(ref rules_dir) = args.rules_dir {
+            info!("Loading Sigma rules from {:?}...", rules_dir);
+            let mut engine = SigmaEngine::new(args.workers);
+            let rules_loaded = engine.load_rules(rules_dir)?;
+            info!("Loaded {} Sigma rules", rules_loaded);
+            engine_opt = Some(engine);
+        } else {
+            warn!("No rules directory provided. Use --rules-dir to enable Sigma detection.");
+        }
+    }
 
     // Create a list of parser instances based on command-line arguments.
     let mut parsers_to_run: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = Vec::new();
@@ -118,7 +128,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         args.file_path, args.parser_type
     );
 
-    
     // Memory-map the file for efficient, concurrent reading.
     let file = File::open(&args.file_path)?;
     // SAFETY: The file is not modified while the map is open, which is a requirement for memmap.
@@ -136,12 +145,11 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     );
 
     // Print the JSON result from each parser.
-    for (parser_type, result, duration) in results {
+    for (parser_type, result, duration) in &results {
         println!("\n--- Results for {:?} parser (took: {:.2?}) ---", parser_type, duration);
         match result {
             Ok(json_output) => {
                 // For brevity, we'll just print the number of top-level items.
-                // Printing a huge JSON for a 200MB file would be slow.
                 if let Some(arr) = json_output.as_array() {
                     println!("Successfully parsed {} records.", arr.len());
                 } else {
@@ -149,35 +157,6 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 }
                 // Uncomment the line below if you want to see the full JSON output.
                 // println!("{}", serde_json::to_string_pretty(&json_output)?);
-
-                // Convert each output to a valid Sigma Zero entry !
-                if parser_type == ParserType::Package {
-                    let first_array = json_output.as_array().unwrap();
-                    if let Some(first_item) = first_array.get(0) {
-                        // 2. Access the "install_logs" field and try to view it as an Array
-                        if let Some(logs) = first_item["install_logs"].as_array() {
-                            // 3. Iterate over the logs
-                            for log_entry in logs {
-                                let log_entry: LogEntry = match serde_json::from_str(&serde_json::to_string_pretty(&log_entry)?) {
-                                        Ok(entry) => entry,
-                                        Err(e) => {
-                                            warn!("Failed to parse log line {}: ", e);
-                                            continue;
-                                        }
-                                    };
-                                    
-                                    let matches = engine.evaluate_log_entry(&log_entry);
-                                    for rule_match in matches {
-                                        if should_output_match(&rule_match, &args.min_level) {
-                                            output_match(&rule_match, &args.output_format);
-                                        }
-                                    }
-                            }
-                        } else {
-                            println!("'install_logs' is missing or not an array");
-                        }
-                    }
-                }
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
@@ -185,57 +164,44 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 
-    Ok(())
-}
-
-
-fn should_output_match(rule_match: &RuleMatch, min_level: &Option<String>) -> bool {
-    if let Some(ref min) = min_level {
-        if let Some(ref level) = rule_match.level {
-            return level_priority(level) >= level_priority(min);
-        }
-        return false;
-    }
-    true
-}
-
-fn level_priority(level: &str) -> u8 {
-    match level.to_lowercase().as_str() {
-        "critical" => 4,
-        "high" => 3,
-        "medium" => 2,
-        "low" => 1,
-        _ => 0,
-    }
-}
-
-fn output_match(rule_match: &RuleMatch, format: &str) {
-    match format {
-        "json" => {
-            if let Ok(json) = serde_json::to_string(rule_match) {
-                println!("{}", json);
+    // === Sigma Rule Evaluation ===
+    if let Some(mut engine) = engine_opt {
+        println!("\n=== Starting Sigma Rule Evaluation ===\n");
+        
+        let mut stats = SigmaStats::new();
+        
+        // Extract log entries from all parser results
+        let all_entries = sigma_integration::extract_all_log_entries(&results);
+        
+        // Evaluate each set of log entries
+        for (parser_type, log_entries) in all_entries {
+            info!(
+                "Evaluating {} log entries from {:?} parser",
+                log_entries.len(),
+                parser_type
+            );
+            
+            stats.total_logs_evaluated += log_entries.len();
+            
+            for log_entry in log_entries {
+                let matches = engine.evaluate_log_entry(&log_entry);
+                
+                for rule_match in matches {
+                    if should_output_match(&rule_match, &args.min_level) {
+                        output_match(&rule_match, &args.output_format);
+                        stats.record_match(&rule_match, &format!("{:?}", parser_type));
+                    }
+                }
             }
         }
-        "silent" => {
-            // No output, just count
-        }
-        _ => {
-            // Text format (default)
-            let level = rule_match.level.as_deref().unwrap_or("unknown");
-            let level_icon = match level {
-                "critical" => "🔥",
-                "high" => "🚨",
-                "medium" => "⚠️ ",
-                "low" => "ℹ️ ",
-                _ => "• ",
-            };
-            
-            println!("{} [{}] {} ({})", 
-                level_icon,
-                level.to_uppercase(),
-                rule_match.rule_title,
-                rule_match.rule_id.as_deref().unwrap_or("unknown")
-            );
+        
+        // Print summary unless in silent mode
+        if args.output_format != "silent" {
+            stats.print_summary();
+        } else {
+            println!("Total matches: {}", stats.total_matches);
         }
     }
+
+    Ok(())
 }

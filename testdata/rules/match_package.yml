@@ -7,7 +7,6 @@ detection:
   selection_suspicious_package:
     pkg:
       - 'com.google.android.gm'
-      - '*cmd.exe'
   condition: selection_suspicious_package
 tags:
   - attack.execution

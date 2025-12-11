@@ -5,8 +5,10 @@ use std::error::Error;
 use std::time::Instant;
 use std::sync::Arc;
 
-// Re-export the parsers module so it can be accessed from main.rs
+// Re-export the modules so it can be accessed from main.rs
 pub mod parsers;
+pub mod sigma_integration;
+pub mod sigma_output;
 
 /// Runs multiple parsers over the same file content concurrently using Rayon.
 ///
