@@ -20,17 +20,19 @@ use bugreport_extractor_library::parsers::{
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
 use bugreport_extractor_library::progress::ProgressTracker;
+use bugreport_extractor_library::comparison;
+use std::collections::HashMap;
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
 #[derive(Parser, Debug)]
 #[command(author, version, about, long_about = None)]
 struct Args {
-    /// The path to the input file to be processed
-    #[arg(short, long)]
-    file_path: String,
+    /// The path to the input file to be processed (not needed in comparison mode)
+    #[arg(short, long, required_unless_present = "compare")]
+    file_path: Option<String>,
 
     /// The type of parser(s) to use. Can be specified multiple times.
-    #[arg(short, long, value_enum, num_args = 1.., required = true)]
+    #[arg(short, long, value_enum, num_args = 1.., required_unless_present = "compare")]
     parser_type: Vec<ParserType>,
 
     /// Path to directory containing Sigma rules (YAML files)
@@ -64,6 +66,10 @@ struct Args {
     /// Disable progress indicators (useful for scripting or when output is redirected)
     #[arg(long)]
     no_progress: bool,
+
+    /// Comparison mode: compare two bugreports (provide two file paths)
+    #[arg(long, num_args = 2, value_names = &["BEFORE", "AFTER"])]
+    compare: Option<Vec<String>>,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -83,6 +89,25 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     // Initialize progress tracker (disabled if no_progress flag or in silent mode)
     let show_progress = !args.no_progress && args.output_format != "silent" && !args.verbose;
     let progress = ProgressTracker::new(show_progress);
+
+    // === COMPARISON MODE ===
+    if let Some(compare_files) = &args.compare {
+        if compare_files.len() != 2 {
+            eprintln!("Error: --compare requires exactly 2 file paths");
+            std::process::exit(1);
+        }
+        
+        info!("Running in comparison mode");
+        run_comparison_mode(&compare_files[0], &compare_files[1], &args, &progress)
+            .map_err(|e| -> Box<dyn std::error::Error + Send + Sync> {
+                Box::new(std::io::Error::new(std::io::ErrorKind::Other, format!("{}", e)))
+            })?;
+        return Ok(());
+    }
+
+    // === NORMAL MODE ===
+    // Require file_path if not in comparison mode
+    let file_path = args.file_path.as_ref().ok_or("--file-path is required")?;
 
     let start_time = Instant::now();
 
@@ -146,12 +171,12 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     if !show_progress {
         println!(
             "Processing file '{}' with {:?} parsers concurrently...",
-            args.file_path, args.parser_type
+            file_path, args.parser_type
         );
     }
 
     // Memory-map the file for efficient, concurrent reading.
-    let file = File::open(&args.file_path)?;
+    let file = File::open(file_path)?;
     let file_size = file.metadata()?.len();
     
     // Show file loading progress
@@ -163,7 +188,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     ProgressTracker::set_position(&file_pb, file_size);
     ProgressTracker::finish_with_message(
         file_pb, 
-        &format!("✓ Loaded {} ({:.2} MB)", args.file_path, file_size as f64 / 1_048_576.0)
+        &format!("✓ Loaded {} ({:.2} MB)", file_path, file_size as f64 / 1_048_576.0)
     );
 
     // The file content is shared across threads using an Arc.
@@ -280,5 +305,169 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 
+    Ok(())
+}
+
+/// Run comparison mode: parse two files and compare them
+fn run_comparison_mode(
+    before_file: &str,
+    after_file: &str,
+    args: &Args,
+    progress: &ProgressTracker,
+) -> Result<(), Box<dyn std::error::Error>> {
+    use std::fs::File;
+    use memmap2::Mmap;
+    use std::sync::Arc;
+    
+    info!("Comparing {} → {}", before_file, after_file);
+    
+    // Determine which parsers to use
+    let parser_types = if args.parser_type.is_empty() {
+        // Default: use Package, Process, USB, Power for comparison
+        vec![ParserType::Package, ParserType::Process, ParserType::Usb, ParserType::Power]
+    } else {
+        args.parser_type.clone()
+    };
+    
+    // Create parser instances for BEFORE file
+    let mut parsers_before: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = Vec::new();
+    for pt in &parser_types {
+        match pt {
+            ParserType::Header => {
+                let parser = HeaderParser::new().expect("Failed to create HeaderParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Memory => {
+                let parser = MemoryParser::new().expect("Failed to create MemoryParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Battery => {
+                let parser = BatteryParser::new().expect("Failed to create BatteryParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Package => {
+                let parser = PackageParser::new().expect("Failed to create PackageParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Process => {
+                let parser = ProcessParser::new().expect("Failed to create ProcessParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Power => {
+                let parser = PowerParser::new().expect("Failed to create PowerParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Usb => {
+                let parser = UsbParser::new().expect("Failed to create UsbParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
+        }
+    }
+    
+    // Parse BEFORE file
+    let before_pb = progress.create_file_progress(0);
+    ProgressTracker::set_message(&before_pb, &format!("Loading before file: {}", before_file));
+    
+    let file = File::open(before_file)?;
+    let file_size = file.metadata()?.len();
+    let mmap = unsafe { Mmap::map(&file)? };
+    let file_content: Arc<[u8]> = Arc::from(&mmap[..]);
+    
+    ProgressTracker::set_position(&before_pb, file_size);
+    ProgressTracker::finish_with_message(
+        before_pb,
+        &format!("✓ Loaded {} ({:.2} MB)", before_file, file_size as f64 / 1_048_576.0)
+    );
+    
+    let before_results = run_parsers_concurrently(file_content, parsers_before);
+    
+    // Create parser instances for AFTER file
+    let mut parsers_after: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = Vec::new();
+    for pt in &parser_types {
+        match pt {
+            ParserType::Header => {
+                let parser = HeaderParser::new().expect("Failed to create HeaderParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Memory => {
+                let parser = MemoryParser::new().expect("Failed to create MemoryParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Battery => {
+                let parser = BatteryParser::new().expect("Failed to create BatteryParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Package => {
+                let parser = PackageParser::new().expect("Failed to create PackageParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Process => {
+                let parser = ProcessParser::new().expect("Failed to create ProcessParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Power => {
+                let parser = PowerParser::new().expect("Failed to create PowerParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Usb => {
+                let parser = UsbParser::new().expect("Failed to create UsbParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+        }
+    }
+    
+    // Parse AFTER file
+    let after_pb = progress.create_file_progress(0);
+    ProgressTracker::set_message(&after_pb, &format!("Loading after file: {}", after_file));
+    
+    let file = File::open(after_file)?;
+    let file_size = file.metadata()?.len();
+    let mmap = unsafe { Mmap::map(&file)? };
+    let file_content: Arc<[u8]> = Arc::from(&mmap[..]);
+    
+    ProgressTracker::set_position(&after_pb, file_size);
+    ProgressTracker::finish_with_message(
+        after_pb,
+        &format!("✓ Loaded {} ({:.2} MB)", after_file, file_size as f64 / 1_048_576.0)
+    );
+    
+    let after_results = run_parsers_concurrently(file_content, parsers_after);
+    
+    // Convert results to HashMap for easier comparison
+    let mut before_map: HashMap<ParserType, serde_json::Value> = HashMap::new();
+    for (parser_type, result, _) in before_results {
+        if let Ok(value) = result {
+            before_map.insert(parser_type, value);
+        }
+    }
+    
+    let mut after_map: HashMap<ParserType, serde_json::Value> = HashMap::new();
+    for (parser_type, result, _) in after_results {
+        if let Ok(value) = result {
+            after_map.insert(parser_type, value);
+        }
+    }
+    
+    // Perform comparison
+    let comparison_pb = progress.create_parser_progress("Comparison");
+    ProgressTracker::set_message(&comparison_pb, "🔍 Comparing outputs in parallel...");
+    
+    let comparison_result = comparison::compare_parser_outputs(
+        &before_map,
+        &after_map,
+        before_file,
+        after_file,
+    );
+    
+    ProgressTracker::finish_with_message(
+        comparison_pb,
+        &format!("✓ Comparison complete - found {} changes across {} parsers", 
+            comparison_result.total_changes(),
+            comparison_result.parser_comparisons.len())
+    );
+    
+    // Output comparison results
+    comparison::output_comparison(&comparison_result, &args.output_format);
+    
     Ok(())
 }

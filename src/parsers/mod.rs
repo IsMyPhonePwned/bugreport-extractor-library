@@ -1,3 +1,4 @@
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error;
 
@@ -26,7 +27,7 @@ pub trait Parser {
 }
 
 /// Enum to represent the available parser types for command-line selection.
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 pub enum ParserType {
     Header,
     Memory,

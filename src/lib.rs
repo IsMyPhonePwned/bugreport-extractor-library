@@ -10,6 +10,7 @@ pub mod parsers;
 pub mod sigma_integration;
 pub mod sigma_output;
 pub mod progress;
+pub mod comparison;
 
 /// Runs multiple parsers over the same file content concurrently using Rayon.
 ///
