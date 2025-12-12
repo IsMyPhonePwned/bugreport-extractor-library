@@ -225,7 +225,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                     println!("Successfully parsed a JSON object.");
                 }
                 // Uncomment the line below if you want to see the full JSON output.
-                // println!("{}", serde_json::to_string_pretty(&json_output)?);
+                println!("{}", serde_json::to_string_pretty(&json_output)?);
             }
             Err(e) => {
                 eprintln!("Error: {}", e);
