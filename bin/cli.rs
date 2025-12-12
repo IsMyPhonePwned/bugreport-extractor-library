@@ -234,7 +234,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     // === Sigma Rule Evaluation ===
-    if let Some(mut engine) = engine_opt {
+    if let Some(engine) = engine_opt {
         if !show_progress {
             println!("\n=== Starting Sigma Rule Evaluation ===\n");
         }
