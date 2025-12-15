@@ -6,6 +6,7 @@ use std::fs::File;
 
 use memmap2::Mmap;
 use std::path::PathBuf;
+use std::collections::HashMap;
 
 use tracing::{info, warn};
 use tracing_subscriber;
@@ -21,7 +22,9 @@ use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
 use bugreport_extractor_library::progress::ProgressTracker;
 use bugreport_extractor_library::comparison;
-use std::collections::HashMap;
+
+use bugreport_extractor_library::parsers::battery_parser::AppBatteryStats;
+use bugreport_extractor_library::detection::detector::ExploitationDetector;
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
 #[derive(Parser, Debug)]
@@ -70,6 +73,10 @@ struct Args {
     /// Comparison mode: compare two bugreports (provide two file paths)
     #[arg(long, num_args = 2, value_names = &["BEFORE", "AFTER"])]
     compare: Option<Vec<String>>,
+
+    // Detection mode
+    #[arg(short, long, num_args(0..=1),  default_missing_value = "default")]
+    detection: Option<String>,
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -232,6 +239,36 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             }
         }
     }
+
+    // Detection part if specified
+    for (parser_type, result, _) in &results {
+        match result {
+            Ok(json_output) => {
+                  if *parser_type == ParserType::Battery {
+                    let apps :  Vec<AppBatteryStats> = serde_json::from_value(json_output.clone())?;
+                    
+                    let detector: ExploitationDetector = match args.detection {
+                        Some(ref detector_file_path) => {
+                            if detector_file_path == "default" {
+                                ExploitationDetector::new()
+                            } else {
+                                ExploitationDetector::from_config_file(detector_file_path.clone()).unwrap()
+                            }
+                        },
+                        None => { ExploitationDetector::new() }
+                    };
+
+                    let exploitation = detector.detect_exploitation(&apps); 
+                     println!("{:?}", exploitation);
+                }
+            }
+            Err(e) => {
+                eprintln!("Error: {}", e);
+            }
+        }
+    }
+
+
 
     // === Sigma Rule Evaluation ===
     if let Some(engine) = engine_opt {

@@ -1,0 +1,39 @@
+{
+  "description": "Default configuration for remote exploitation detection",
+  "rce": {
+    "suspicious_cpu_system_ratio": 4,
+    "min_system_cpu_ms": 30000,
+    "unexpected_process_spawn_count": 10
+  },
+  "c2": {
+    "beaconing_alarm_count": 100,
+    "beaconing_avg_duration_ms": 500,
+    "regular_interval_variance": 0.3,
+    "gcm_abuse_count": 50
+  },
+  "exfiltration": {
+    "tx_rx_ratio": 3,
+    "min_upload_bytes": 50000000,
+    "cellular_preference_ratio": 2.5,
+    "background_upload_threshold": 20000000
+  },
+  "rat": {
+    "persistent_service_hours": 6,
+    "wakelock_frequency": 250,
+    "screen_capture_indicators": true
+  },
+  "backdoor": {
+    "boot_receiver_count": 3,
+    "hidden_service_time_ms": 21600000,
+    "debugging_enabled": true
+  },
+  "privilege_escalation": {
+    "system_cpu_ratio": 3.5,
+    "root_access_indicators": true,
+    "permission_escalation": true
+  },
+  "lateral_movement": {
+    "ipc_abuse_count": 20,
+    "data_access_other_apps": true
+  }
+}

@@ -2,13 +2,13 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::error::Error;
 
-mod header_parser;
-mod memory_parser;
-mod battery_parser;
-mod package_parser;
-mod process_parser;
-mod power_parser;
-mod usb_parser;
+pub mod header_parser;
+pub mod memory_parser;
+pub mod battery_parser;
+pub mod package_parser;
+pub mod process_parser;
+pub mod power_parser;
+pub mod usb_parser;
 
 pub use header_parser::HeaderParser;
 pub use memory_parser::MemoryParser;

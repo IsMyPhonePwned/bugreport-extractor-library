@@ -1,0 +1,39 @@
+{
+  "description": "Lenient configuration for corporate/MDM environments - higher thresholds for legitimate enterprise apps",
+  "rce": {
+    "suspicious_cpu_system_ratio": 5.0,
+    "min_system_cpu_ms": 40000,
+    "unexpected_process_spawn_count": 15
+  },
+  "c2": {
+    "beaconing_alarm_count": 200,
+    "beaconing_avg_duration_ms": 600,
+    "regular_interval_variance": 0.4,
+    "gcm_abuse_count": 100
+  },
+  "exfiltration": {
+    "tx_rx_ratio": 4.0,
+    "min_upload_bytes": 100000000,
+    "cellular_preference_ratio": 3.0,
+    "background_upload_threshold": 50000000
+  },
+  "rat": {
+    "persistent_service_hours": 12.0,
+    "wakelock_frequency": 400,
+    "screen_capture_indicators": true
+  },
+  "backdoor": {
+    "boot_receiver_count": 5,
+    "hidden_service_time_ms": 43200000,
+    "debugging_enabled": true
+  },
+  "privilege_escalation": {
+    "system_cpu_ratio": 4.5,
+    "root_access_indicators": true,
+    "permission_escalation": true
+  },
+  "lateral_movement": {
+    "ipc_abuse_count": 40,
+    "data_access_other_apps": true
+  }
+}
