@@ -7,22 +7,35 @@ edition = "2021"
 [lib]
 name = "bugreport_extractor_library"
 path = "src/lib.rs"
+crate-type = ["cdylib", "rlib"]
 
 [[bin]]
 name = "bel-cli"
 path = "bin/cli.rs"
 
-
 [dependencies]
+# Universal dependencies (work on both native and WASM)
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
+regex = "1"
+tracing = "0.1"
+sigma-zero = { git = "https://github.com/ping2A/sigmazero.git" }
+chrono = "0.4"
+
+# Native-only dependencies
+[target.'cfg(not(target_arch = "wasm32"))'.dependencies]
 clap = { version = "4.0", features = ["derive"] }
 rayon = "1.8"
 memmap2 = "0.9"
-regex = "1"
-sigma-zero = { git = "https://github.com/ping2A/sigmazero.git" }
-# Logging
-tracing = "0.1"
 tracing-subscriber = "0.3"
 indicatif = "0.17"
-chrono = "0.4"
+
+# WASM-specific dependencies
+[target.'cfg(target_arch = "wasm32")'.dependencies]
+wasm-bindgen = "0.2"
+getrandom = { version = "0.2", features = ["js"] }
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1

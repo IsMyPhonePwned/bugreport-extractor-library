@@ -2,6 +2,8 @@ use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use std::collections::HashMap;
 use crate::parsers::ParserType;
+
+#[cfg(not(target_arch = "wasm32"))]
 use rayon::prelude::*;
 
 // Submodules
@@ -124,31 +126,19 @@ pub fn compare_parser_outputs(
     all_parsers.dedup();
     
     // Compare each parser type IN PARALLEL
+    #[cfg(not(target_arch = "wasm32"))]
     let comparisons_and_events: Vec<(ParserComparison, Vec<TimelineEvent>)> = all_parsers
         .par_iter()
         .filter_map(|parser_type| {
-            let before_output = before.get(parser_type).cloned().unwrap_or(Value::Null);
-            let after_output = after.get(parser_type).cloned().unwrap_or(Value::Null);
-            
-            // Perform comparison based on parser type
-            let comparison = match parser_type {
-                ParserType::Package => package_differ::compare_packages(&before_output, &after_output),
-                ParserType::Process => process_differ::compare_processes(&before_output, &after_output),
-                ParserType::Usb => usb_differ::compare_usb(&before_output, &after_output),
-                ParserType::Power => power_differ::compare_power(&before_output, &after_output),
-                _ => return None, // Skip unsupported parsers
-            };
-            
-            // Extract timeline events from this comparison
-            let events = match parser_type {
-                ParserType::Package => package_differ::extract_timeline_events(&comparison),
-                ParserType::Process => process_differ::extract_timeline_events(&comparison),
-                ParserType::Usb => usb_differ::extract_timeline_events(&comparison),
-                ParserType::Power => power_differ::extract_timeline_events(&comparison),
-                _ => Vec::new(),
-            };
-            
-            Some((comparison, events))
+                     compare_parser_type(parser_type, before, after)            
+        })
+        .collect();
+    
+    #[cfg(target_arch = "wasm32")]
+    let comparisons_and_events: Vec<(ParserComparison, Vec<TimelineEvent>)> = all_parsers
+        .iter()
+        .filter_map(|parser_type| {
+            compare_parser_type(parser_type, before, after)
         })
         .collect();
     
@@ -163,6 +153,36 @@ pub fn compare_parser_outputs(
     
     result
 }
+
+fn compare_parser_type(
+    parser_type: &ParserType,
+    before: &HashMap<ParserType, Value>,
+    after: &HashMap<ParserType, Value>,
+) -> Option<(ParserComparison, Vec<TimelineEvent>)> {
+    let before_output = before.get(parser_type).cloned().unwrap_or(Value::Null);
+    let after_output = after.get(parser_type).cloned().unwrap_or(Value::Null);
+    
+    // Perform comparison based on parser type
+    let comparison = match parser_type {
+        ParserType::Package => package_differ::compare_packages(&before_output, &after_output),
+        ParserType::Process => process_differ::compare_processes(&before_output, &after_output),
+        ParserType::Usb => usb_differ::compare_usb(&before_output, &after_output),
+        ParserType::Power => power_differ::compare_power(&before_output, &after_output),
+        _ => return None, // Skip unsupported parsers
+    };
+    
+    // Extract timeline events from this comparison
+    let events = match parser_type {
+        ParserType::Package => package_differ::extract_timeline_events(&comparison),
+        ParserType::Process => process_differ::extract_timeline_events(&comparison),
+        ParserType::Usb => usb_differ::extract_timeline_events(&comparison),
+        ParserType::Power => power_differ::extract_timeline_events(&comparison),
+        _ => Vec::new(),
+    };
+    
+    Some((comparison, events))
+}
+
 
 #[cfg(test)]
 mod tests {

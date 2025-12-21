@@ -1,15 +1,19 @@
 use parsers::{Parser as DataParser, ParserType};
-use rayon::prelude::*;
 use serde_json::Value;
 use std::error::Error;
 use std::time::Instant;
 use std::sync::Arc;
 
+#[cfg(not(target_arch = "wasm32"))]
+use rayon::prelude::*;
+
+#[cfg(not(target_arch = "wasm32"))]
+pub mod progress;
+
 // Re-export the modules so it can be accessed from main.rs
 pub mod parsers;
 pub mod sigma_integration;
 pub mod sigma_output;
-pub mod progress;
 pub mod comparison;
 pub mod detection;
 
@@ -36,17 +40,35 @@ pub fn run_parsers_concurrently(
     Result<Value, Box<dyn Error + Send + Sync>>,
     std::time::Duration,
 )> {
-    // Use Rayon's parallel iterator to process each parser concurrently.
-    parsers_to_run
-        .into_par_iter()
-        .map(|(parser_type, parser)| {
-            let content_clone = Arc::clone(&file_content);
-            let parser_start_time = Instant::now();
-            let result = parser.parse(&content_clone);
-            let duration = parser_start_time.elapsed();
-            (parser_type, result, duration)
-        })
-        .collect()
+    #[cfg(not(target_arch = "wasm32"))]
+    {
+        // Use Rayon's parallel iterator on native platforms
+        parsers_to_run
+            .into_par_iter()
+            .map(|(parser_type, parser)| {
+                let content_clone = Arc::clone(&file_content);
+                let parser_start_time = Instant::now();
+                let result = parser.parse(&content_clone);
+                let duration = parser_start_time.elapsed();
+                (parser_type, result, duration)
+            })
+            .collect()
+    }
+    
+    #[cfg(target_arch = "wasm32")]
+    {
+        // Sequential processing for WASM
+        parsers_to_run
+            .into_iter()
+            .map(|(parser_type, parser)| {
+                let content_clone = Arc::clone(&file_content);
+                let parser_start_time = Instant::now();
+                let result = parser.parse(&content_clone);
+                let duration = parser_start_time.elapsed();
+                (parser_type, result, duration)
+            })
+            .collect()
+    }
 }
 
 #[cfg(test)]
