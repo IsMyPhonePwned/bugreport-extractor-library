@@ -1,7 +1,6 @@
 use parsers::{Parser as DataParser, ParserType};
 use serde_json::Value;
 use std::error::Error;
-use std::time::Instant;
 use std::sync::Arc;
 
 #[cfg(not(target_arch = "wasm32"))]
@@ -16,6 +15,10 @@ pub mod sigma_integration;
 pub mod sigma_output;
 pub mod comparison;
 pub mod detection;
+
+pub mod timing;  // Add this
+
+use timing::Instant;
 
 /// Runs multiple parsers over the same file content concurrently using Rayon.
 ///
