@@ -15,8 +15,9 @@ pub mod sigma_integration;
 pub mod sigma_output;
 pub mod comparison;
 pub mod detection;
-
-pub mod timing;  // Add this
+pub mod timing;
+pub mod file_loader;
+pub mod zip_utils;
 
 use timing::Instant;
 

@@ -23,6 +23,8 @@ use bugreport_extractor_library::sigma_output::{should_output_match, output_matc
 use bugreport_extractor_library::progress::ProgressTracker;
 use bugreport_extractor_library::comparison;
 
+use bugreport_extractor_library::file_loader;
+
 use bugreport_extractor_library::parsers::battery_parser::AppBatteryStats;
 use bugreport_extractor_library::detection::detector::ExploitationDetector;
 
@@ -182,24 +184,18 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         );
     }
 
-    // Memory-map the file for efficient, concurrent reading.
-    let file = File::open(file_path)?;
-    let file_size = file.metadata()?.len();
+    // Load file with automatic ZIP detection and extraction
+    info!("Loading file: {}", file_path);
+    let file_pb = progress.create_file_progress(0);
+    ProgressTracker::set_message(&file_pb, &format!("📂 Loading {}", file_path));
     
-    // Show file loading progress
-    let file_pb = progress.create_file_progress(file_size);
+    let (file_content, is_from_zip) = file_loader::load_bugreport_file(file_path)?;
     
-    // SAFETY: The file is not modified while the map is open, which is a requirement for memmap.
-    let mmap = unsafe { Mmap::map(&file)? };
-    
-    ProgressTracker::set_position(&file_pb, file_size);
+    let file_desc = file_loader::get_file_description(file_path, is_from_zip);
     ProgressTracker::finish_with_message(
         file_pb, 
-        &format!("✓ Loaded {} ({:.2} MB)", file_path, file_size as f64 / 1_048_576.0)
+        &format!("✓ Loaded {} ({:.2} MB)", file_desc, file_content.len() as f64 / 1_048_576.0)
     );
-
-    // The file content is shared across threads using an Arc.
-    let file_content: Arc<[u8]> = Arc::from(&mmap[..]);
 
     // Create progress bar for parser execution
     let parser_pb = progress.create_multi_parser_progress(parsers_to_run.len());
@@ -351,11 +347,7 @@ fn run_comparison_mode(
     after_file: &str,
     args: &Args,
     progress: &ProgressTracker,
-) -> Result<(), Box<dyn std::error::Error>> {
-    use std::fs::File;
-    use memmap2::Mmap;
-    use std::sync::Arc;
-    
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {   
     info!("Comparing {} → {}", before_file, after_file);
     
     // Determine which parsers to use
@@ -405,15 +397,12 @@ fn run_comparison_mode(
     let before_pb = progress.create_file_progress(0);
     ProgressTracker::set_message(&before_pb, &format!("Loading before file: {}", before_file));
     
-    let file = File::open(before_file)?;
-    let file_size = file.metadata()?.len();
-    let mmap = unsafe { Mmap::map(&file)? };
-    let file_content: Arc<[u8]> = Arc::from(&mmap[..]);
+    let (file_content, is_from_zip) = file_loader::load_bugreport_file(before_file)?;
     
-    ProgressTracker::set_position(&before_pb, file_size);
+    ProgressTracker::set_position(&before_pb, file_content.len() as u64);
     ProgressTracker::finish_with_message(
         before_pb,
-        &format!("✓ Loaded {} ({:.2} MB)", before_file, file_size as f64 / 1_048_576.0)
+        &format!("✓ Loaded {} ({:.2} MB)", before_file, file_content.len() as f64 / 1_048_576.0)
     );
     
     let before_results = run_parsers_concurrently(file_content, parsers_before);
@@ -457,15 +446,12 @@ fn run_comparison_mode(
     let after_pb = progress.create_file_progress(0);
     ProgressTracker::set_message(&after_pb, &format!("Loading after file: {}", after_file));
     
-    let file = File::open(after_file)?;
-    let file_size = file.metadata()?.len();
-    let mmap = unsafe { Mmap::map(&file)? };
-    let file_content: Arc<[u8]> = Arc::from(&mmap[..]);
-    
-    ProgressTracker::set_position(&after_pb, file_size);
+    let (file_content, is_from_zip) = file_loader::load_bugreport_file(after_file)?;
+
+    ProgressTracker::set_position(&after_pb, file_content.len() as u64);
     ProgressTracker::finish_with_message(
         after_pb,
-        &format!("✓ Loaded {} ({:.2} MB)", after_file, file_size as f64 / 1_048_576.0)
+        &format!("✓ Loaded {} ({:.2} MB)", after_file, file_content.len() as f64 / 1_048_576.0)
     );
     
     let after_results = run_parsers_concurrently(file_content, parsers_after);
