@@ -171,6 +171,7 @@ fn format_parser_name(parser_type: &ParserType) -> &str {
         ParserType::Battery => "Battery",
         ParserType::Header => "Header",
         ParserType::Memory => "Memory",
+        ParserType::Crash => "Crash",
     }
 }
 

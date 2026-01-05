@@ -1,10 +1,7 @@
 use clap::Parser;
 use std::error::Error;
 use std::time::Instant;
-use std::sync::Arc;
-use std::fs::File;
 
-use memmap2::Mmap;
 use std::path::PathBuf;
 use std::collections::HashMap;
 
@@ -15,8 +12,7 @@ use sigma_zero::engine::SigmaEngine;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    Parser as DataParser, ParserType, HeaderParser, MemoryParser, BatteryParser, 
-    PackageParser, ProcessParser, PowerParser, UsbParser
+    BatteryParser, CrashParser, HeaderParser, MemoryParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
 };
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
@@ -173,6 +169,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Usb => {
                 let usb_parser = UsbParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(usb_parser)));
+            },
+            ParserType::Crash => {
+                let crash_parser = CrashParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(crash_parser)));
             },
         }
     }
@@ -390,6 +390,10 @@ fn run_comparison_mode(
                 let parser = UsbParser::new().expect("Failed to create UsbParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::Crash => {
+                let parser = CrashParser::new().expect("Failed to create CrashParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
         }
     }
     
@@ -437,6 +441,10 @@ fn run_comparison_mode(
             },
             ParserType::Usb => {
                 let parser = UsbParser::new().expect("Failed to create UsbParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Crash => {
+                let parser = CrashParser::new().expect("Failed to create CrashParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
             },
         }
