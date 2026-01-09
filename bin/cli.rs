@@ -64,6 +64,10 @@ struct Args {
     #[arg(long)]
     show_log_details: bool,
 
+    /// Show parser results (really verbose)
+    #[arg(long, default_value_t = false)]
+    show_parser_results: bool,
+
     /// Disable progress indicators (useful for scripting or when output is redirected)
     #[arg(long)]
     no_progress: bool,
@@ -93,6 +97,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     // Initialize progress tracker (disabled if no_progress flag or in silent mode)
     let show_progress = !args.no_progress && args.output_format != "silent" && !args.verbose;
+    let show_parser_results = args.show_parser_results;
     let progress = ProgressTracker::new(show_progress);
 
     // === COMPARISON MODE ===
@@ -217,54 +222,156 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     // Print the JSON result from each parser.
-    for (parser_type, result, duration) in &results {
-        println!("\n--- Results for {:?} parser (took: {:.2?}) ---", parser_type, duration);
-        match result {
-            Ok(json_output) => {
-                // For brevity, we'll just print the number of top-level items.
-                if let Some(arr) = json_output.as_array() {
-                    println!("Successfully parsed {} records.", arr.len());
+    if show_parser_results {
+        for (parser_type, result, duration) in &results {
+            println!("\n--- Results for {:?} parser (took: {:.2?}) ---", parser_type, duration);
+            match result {
+                Ok(json_output) => {
+                    // For brevity, we'll just print the number of top-level items.
+                    if let Some(arr) = json_output.as_array() {
+                        println!("Successfully parsed {} records.", arr.len());
+                    } else {
+                        println!("Successfully parsed a JSON object.");
+                    }
+                    // Uncomment the line below if you want to see the full JSON output.
+                    println!("{}", serde_json::to_string_pretty(&json_output)?);
+                }
+                Err(e) => {
+                    eprintln!("Error: {}", e);
+                }
+            }
+        }    
+    }
+
+    // === Detection ===
+    if args.detection.is_some() {
+        if !show_progress {
+            println!("\n=== Security Detection Analysis ===\n");
+        }
+                
+        // Collect battery stats and crash info from parser results
+        let mut battery_stats: Option<Vec<AppBatteryStats>> = None;
+        let mut crash_info: Option<bugreport_extractor_library::parsers::crash_parser::CrashInfo> = None;
+        
+        for (parser_type, result, _) in &results {
+            match result {
+                Ok(json_output) => {
+                    if *parser_type == ParserType::Battery {
+                        battery_stats = Some(serde_json::from_value(json_output.clone())?);
+                    } else if *parser_type == ParserType::Crash {
+                        crash_info = Some(serde_json::from_value(json_output.clone())?);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error parsing {:?}: {}", parser_type, e);
+                }
+            }
+        }
+        
+        // Initialize detector
+        let detector: ExploitationDetector = match args.detection {
+            Some(ref detector_file_path) => {
+                if detector_file_path == "default" {
+                    ExploitationDetector::new()
                 } else {
-                    println!("Successfully parsed a JSON object.");
+                    ExploitationDetector::from_config_file(detector_file_path).unwrap()
                 }
-                // Uncomment the line below if you want to see the full JSON output.
-                println!("{}", serde_json::to_string_pretty(&json_output)?);
+            },
+            None => ExploitationDetector::new()
+        };
+        
+        // Run unified analysis (handles empty data gracefully)
+        let unified_result = detector.analyze_unified(
+            battery_stats.as_ref().map(|v| v.as_slice()).unwrap_or(&[]),
+            crash_info.as_ref()
+        );
+        
+        // Display results
+        println!("{}", unified_result.summary);
+        println!("Overall Severity: {:?}", unified_result.overall_severity);
+        println!("Total Indicators: {}\n", unified_result.total_indicators);
+        
+        // Show battery-based exploitations
+        if !unified_result.battery_exploitation.is_empty() {
+            println!("🔋 Battery-Based Exploitation Detected:");
+            for exploit in &unified_result.battery_exploitation {
+                println!("\n  Package: {}", exploit.package_name);
+                println!("  Type: {}", exploit.exploitation_type);
+                println!("  Severity: {:?}", exploit.severity);
+                println!("  Confidence: {:.0}%", exploit.confidence * 100.0);
+                println!("  Indicators:");
+                for indicator in &exploit.indicators {
+                    println!("    • {}", indicator);
+                }
             }
-            Err(e) => {
-                eprintln!("Error: {}", e);
-            }
+            println!();
         }
-    }
-
-    // Detection part if specified
-    for (parser_type, result, _) in &results {
-        match result {
-            Ok(json_output) => {
-                  if *parser_type == ParserType::Battery {
-                    let apps :  Vec<AppBatteryStats> = serde_json::from_value(json_output.clone())?;
-                    
-                    let detector: ExploitationDetector = match args.detection {
-                        Some(ref detector_file_path) => {
-                            if detector_file_path == "default" {
-                                ExploitationDetector::new()
-                            } else {
-                                ExploitationDetector::from_config_file(detector_file_path.clone()).unwrap()
+        
+        // Show crash-based detections
+        if let Some(ref crash_detection) = unified_result.crash_detection {
+            if crash_detection.suspicious_crashes > 0 || crash_detection.suspicious_anrs > 0 {
+                println!("💥 Crash-Based Security Issues:");
+                println!("  Total Crashes: {}", crash_detection.total_crashes);
+                println!("  Suspicious Crashes: {}", crash_detection.suspicious_crashes);
+                println!("  Total ANRs: {}", crash_detection.total_anrs);
+                println!("  Suspicious ANRs: {}", crash_detection.suspicious_anrs);
+                
+                // Show critical/high severity crashes
+                for event in &crash_detection.events {
+                    use bugreport_extractor_library::detection::crash::Severity as CrashSeverity;
+                    if matches!(event.severity, CrashSeverity::Critical | CrashSeverity::High) {
+                        println!("\n  [{:?}] {}", event.severity, event.process_name);
+                        println!("  Signal: {}", event.signal);
+                        if let Some(ref addr) = event.fault_address {
+                            println!("  Fault Address: {}", addr);
+                        }
+                        if let Some(ref mem) = event.memory_analysis {
+                            if mem.is_heap_spray {
+                                println!("  ⚠️  Heap spray detected!");
                             }
-                        },
-                        None => { ExploitationDetector::new() }
-                    };
-
-                    let exploitation = detector.detect_exploitation(&apps); 
-                     println!("{:?}", exploitation);
+                            if mem.is_rop_chain_likely {
+                                println!("  ⚠️  ROP chain likely!");
+                            }
+                        }
+                        println!("  Indicators:");
+                        for indicator in &event.indicators {
+                            println!("    • {}", indicator);
+                        }
+                    }
                 }
-            }
-            Err(e) => {
-                eprintln!("Error: {}", e);
+                
+                // Show suspicious ANRs
+                for anr in &crash_detection.anr_events {
+                    use bugreport_extractor_library::detection::crash::Severity as CrashSeverity;
+                    if matches!(anr.severity, CrashSeverity::Critical | CrashSeverity::High) {
+                        println!("\n  [ANR] {} (PID: {})", anr.process_name, anr.pid);
+                        println!("  Type: {}", anr.anr_type);
+                        println!("  Blocked threads: {}", anr.blocked_threads);
+                        println!("  Indicators:");
+                        for indicator in &anr.indicators {
+                            println!("    • {}", indicator);
+                        }
+                    }
+                }
+                println!();
             }
         }
+        
+        // Show recommendations
+        if !unified_result.recommendations.is_empty() {
+            println!("📋 Recommendations:");
+            for rec in &unified_result.recommendations {
+                println!("  {}", rec);
+            }
+            println!();
+        }
+        
+        // JSON output option
+        if args.output_format == "json" {
+            println!("\n=== JSON Output ===");
+            println!("{}", serde_json::to_string_pretty(&unified_result)?);
+        }
     }
-
-
 
     // === Sigma Rule Evaluation ===
     if let Some(engine) = engine_opt {
@@ -401,7 +508,7 @@ fn run_comparison_mode(
     let before_pb = progress.create_file_progress(0);
     ProgressTracker::set_message(&before_pb, &format!("Loading before file: {}", before_file));
     
-    let (file_content, is_from_zip) = file_loader::load_bugreport_file(before_file)?;
+    let (file_content, _is_from_zip) = file_loader::load_bugreport_file(before_file)?;
     
     ProgressTracker::set_position(&before_pb, file_content.len() as u64);
     ProgressTracker::finish_with_message(
@@ -454,7 +561,7 @@ fn run_comparison_mode(
     let after_pb = progress.create_file_progress(0);
     ProgressTracker::set_message(&after_pb, &format!("Loading after file: {}", after_file));
     
-    let (file_content, is_from_zip) = file_loader::load_bugreport_file(after_file)?;
+    let (file_content, _is_from_zip) = file_loader::load_bugreport_file(after_file)?;
 
     ProgressTracker::set_position(&after_pb, file_content.len() as u64);
     ProgressTracker::finish_with_message(

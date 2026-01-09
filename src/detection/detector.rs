@@ -1,5 +1,6 @@
 // Exploitation Detector - With JSON Configuration Support
 // Detects when applications have been remotely compromised or exploited
+// Now includes crash analysis for memory exploitation detection
 
 use serde::{Deserialize, Serialize};
 use std::fs;
@@ -7,6 +8,13 @@ use std::path::Path;
 
 // Import from battery_parser
 use crate::parsers::battery_parser::AppBatteryStats;
+
+// Import crash detection types (parsing done elsewhere)
+use crate::detection::crash::{
+    SuspiciousCrashDetector, DetectionResult as CrashDetectionResult,
+    Severity as CrashSeverity
+};
+use crate::parsers::crash_parser::CrashInfo;
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct ExploitationIndicator {
@@ -53,8 +61,39 @@ impl std::fmt::Display for ExploitationType {
     }
 }
 
+// ============================================================================
+// UNIFIED DETECTION RESULT
+// ============================================================================
+
+/// Unified detection result combining battery-based and crash-based detection
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct UnifiedDetectionResult {
+    /// Battery-based exploitation indicators
+    pub battery_exploitation: Vec<ExploitationIndicator>,
+    
+    /// Crash-based security indicators
+    pub crash_detection: Option<CrashDetectionResult>,
+    
+    /// Overall threat assessment
+    pub overall_severity: SeverityLevel,
+    
+    /// Combined indicators count
+    pub total_indicators: usize,
+    
+    /// High-level summary
+    pub summary: String,
+    
+    /// Recommended actions
+    pub recommendations: Vec<String>,
+}
+
+// ============================================================================
+// DETECTOR CONFIGURATION
+// ============================================================================
+
 pub struct ExploitationDetector {
     pub config: DetectorConfig,
+    crash_detector: SuspiciousCrashDetector,
 }
 
 /// Main configuration structure - can be loaded from JSON
@@ -62,6 +101,10 @@ pub struct ExploitationDetector {
 pub struct DetectorConfig {
     #[serde(default)]
     pub description: Option<String>,
+    
+    /// Enable crash detection
+    #[serde(default = "default_true")]
+    pub enable_crash_detection: bool,
     
     pub rce: RceConfig,
     pub c2: C2Config,
@@ -71,6 +114,8 @@ pub struct DetectorConfig {
     pub privilege_escalation: PrivilegeEscalationConfig,
     pub lateral_movement: LateralMovementConfig,
 }
+
+fn default_true() -> bool { true }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct RceConfig {
@@ -126,6 +171,7 @@ impl Default for DetectorConfig {
     fn default() -> Self {
         Self {
             description: Some("Default configuration".to_string()),
+            enable_crash_detection: true,
             rce: RceConfig {
                 suspicious_cpu_system_ratio: 4.0,
                 min_system_cpu_ms: 30_000,
@@ -197,6 +243,7 @@ impl DetectorConfig {
     pub fn strict() -> Self {
         Self {
             description: Some("Strict configuration for high-security environments".to_string()),
+            enable_crash_detection: true,
             rce: RceConfig {
                 suspicious_cpu_system_ratio: 3.0,
                 min_system_cpu_ms: 20_000,
@@ -240,6 +287,7 @@ impl DetectorConfig {
     pub fn lenient() -> Self {
         Self {
             description: Some("Lenient configuration for corporate/MDM environments".to_string()),
+            enable_crash_detection: true,
             rce: RceConfig {
                 suspicious_cpu_system_ratio: 5.0,
                 min_system_cpu_ms: 40_000,
@@ -280,29 +328,41 @@ impl DetectorConfig {
     }
 }
 
+// ============================================================================
+// MAIN DETECTOR IMPLEMENTATION
+// ============================================================================
+
 impl ExploitationDetector {
     /// Create detector with default configuration
     pub fn new() -> Self {
         Self {
             config: DetectorConfig::default(),
+            crash_detector: SuspiciousCrashDetector::new(),
         }
     }
     
     /// Create detector with custom configuration
     pub fn with_config(config: DetectorConfig) -> Self {
-        Self { config }
+        Self { 
+            config,
+            crash_detector: SuspiciousCrashDetector::new(),
+        }
     }
     
     /// Create detector by loading configuration from JSON file
     pub fn from_config_file<P: AsRef<Path>>(path: P) -> Result<Self, Box<dyn std::error::Error>> {
         let config = DetectorConfig::from_file(path)?;
-        Ok(Self { config })
+        Ok(Self { 
+            config,
+            crash_detector: SuspiciousCrashDetector::new(),
+        })
     }
     
     /// Create detector with strict configuration
     pub fn strict() -> Self {
         Self {
             config: DetectorConfig::strict(),
+            crash_detector: SuspiciousCrashDetector::new(),
         }
     }
     
@@ -310,10 +370,169 @@ impl ExploitationDetector {
     pub fn lenient() -> Self {
         Self {
             config: DetectorConfig::lenient(),
+            crash_detector: SuspiciousCrashDetector::new(),
         }
     }
     
-    /// Main detection entry point
+    /// Analyze crashes for security indicators (takes pre-parsed crash data)
+    pub fn detect_crashes(&self, crash_info: &CrashInfo) -> CrashDetectionResult {
+        self.crash_detector.analyze(crash_info)
+    }
+    
+    /// Unified analysis - combines battery and crash detection (both pre-parsed)
+    pub fn analyze_unified(
+        &self,
+        apps: &[AppBatteryStats],
+        crash_info: Option<&CrashInfo>,
+    ) -> UnifiedDetectionResult {
+        let battery_exploitation = self.detect_exploitation(apps);
+        let crash_detection = crash_info.map(|c| self.detect_crashes(c));
+        
+        self.generate_unified_result(battery_exploitation, crash_detection)
+    }
+    
+    /// Generate unified detection result
+    fn generate_unified_result(
+        &self,
+        battery_exploitation: Vec<ExploitationIndicator>,
+        crash_detection: Option<CrashDetectionResult>,
+    ) -> UnifiedDetectionResult {
+        
+        // Calculate overall severity
+        let battery_severity = battery_exploitation.iter()
+            .map(|e| &e.severity)
+            .max()
+            .unwrap_or(&SeverityLevel::Low);
+        
+        let crash_severity = crash_detection.as_ref()
+            .map(|c| Self::map_crash_severity_to_exploitation(&c.get_highest_severity()))
+            .unwrap_or(SeverityLevel::Low);
+        
+        let overall_severity = std::cmp::max(battery_severity.clone(), crash_severity);
+        
+        // Count total indicators
+        let battery_count = battery_exploitation.iter()
+            .map(|e| e.indicators.len())
+            .sum::<usize>();
+        
+        let crash_count = crash_detection.as_ref()
+            .map(|c| c.suspicious_crashes + c.suspicious_anrs)
+            .unwrap_or(0);
+        
+        let total_indicators = battery_count + crash_count;
+        
+        // Generate summary
+        let summary = self.generate_summary(&overall_severity, &battery_exploitation, &crash_detection);
+        
+        // Generate recommendations
+        let recommendations = self.generate_recommendations(&battery_exploitation, &crash_detection);
+        
+        UnifiedDetectionResult {
+            battery_exploitation,
+            crash_detection,
+            overall_severity,
+            total_indicators,
+            summary,
+            recommendations,
+        }
+    }
+    
+    /// Map crash severity to exploitation severity
+    fn map_crash_severity_to_exploitation(crash_severity: &CrashSeverity) -> SeverityLevel {
+        match crash_severity {
+            CrashSeverity::Critical => SeverityLevel::Critical,
+            CrashSeverity::High => SeverityLevel::High,
+            CrashSeverity::Medium => SeverityLevel::Medium,
+            CrashSeverity::Low => SeverityLevel::Low,
+            CrashSeverity::Info => SeverityLevel::Low,
+        }
+    }
+    
+    /// Generate human-readable summary
+    fn generate_summary(
+        &self,
+        severity: &SeverityLevel,
+        battery: &[ExploitationIndicator],
+        crashes: &Option<CrashDetectionResult>,
+    ) -> String {
+        let threat_icon = match severity {
+            SeverityLevel::Critical => "🔴",
+            SeverityLevel::High => "🟠",
+            SeverityLevel::Medium => "🟡",
+            SeverityLevel::Low => "🔵",
+        };
+        
+        let mut parts = vec![format!("{} {:?} Threat", threat_icon, severity)];
+        
+        if !battery.is_empty() {
+            parts.push(format!("{} battery-based exploitation(s)", battery.len()));
+        }
+        
+        if let Some(ref crash_result) = crashes {
+            if crash_result.suspicious_crashes > 0 {
+                parts.push(format!("{} suspicious crash(es)", crash_result.suspicious_crashes));
+            }
+            if crash_result.suspicious_anrs > 0 {
+                parts.push(format!("{} suspicious ANR(s)", crash_result.suspicious_anrs));
+            }
+        }
+        
+        parts.join(" | ")
+    }
+    
+    /// Generate actionable recommendations
+    fn generate_recommendations(
+        &self,
+        battery: &[ExploitationIndicator],
+        crashes: &Option<CrashDetectionResult>,
+    ) -> Vec<String> {
+        let mut recs = Vec::new();
+        
+        // Battery-based recommendations
+        for exploit in battery {
+            match exploit.exploitation_type {
+                ExploitationType::RemoteCodeExecution => {
+                    recs.push(format!("🚨 CRITICAL: {} shows RCE indicators - isolate device immediately", exploit.package_name));
+                }
+                ExploitationType::CommandAndControl => {
+                    recs.push(format!("⚠️ C2 detected in {} - block network access and analyze traffic", exploit.package_name));
+                }
+                ExploitationType::DataExfiltration => {
+                    recs.push(format!("📤 Data exfiltration from {} - investigate uploaded data", exploit.package_name));
+                }
+                _ => {}
+            }
+        }
+        
+        // Crash-based recommendations
+        if let Some(ref crash_result) = crashes {
+            if crash_result.summary.critical_count > 0 {
+                recs.push("🚨 Critical memory exploitation detected - immediate forensic analysis required".to_string());
+                recs.push("Preserve crash dumps and system logs for investigation".to_string());
+            }
+            
+            if !crash_result.summary.most_exploited_libraries.is_empty() {
+                recs.push(format!(
+                    "🔧 Update vulnerable libraries: {}",
+                    crash_result.summary.most_exploited_libraries.join(", ")
+                ));
+            }
+            
+            if crash_result.summary.critical_count + crash_result.summary.high_count > 5 {
+                recs.push("📊 Multiple high-risk crashes detected - device may be under active attack".to_string());
+            }
+        }
+        
+        // General recommendations
+        if recs.is_empty() {
+            recs.push("✅ No critical security issues detected".to_string());
+            recs.push("Continue routine security monitoring".to_string());
+        }
+        
+        recs
+    }
+    
+    /// Main detection entry point (battery-based only)
     pub fn detect_exploitation(&self, apps: &[AppBatteryStats]) -> Vec<ExploitationIndicator> {
         apps.iter()
             .filter_map(|app| self.analyze_app(app))
@@ -351,7 +570,8 @@ impl ExploitationDetector {
         }
     }
     
-    // ... (rest of detection methods remain the same, but now use self.config.rce.xxx, self.config.c2.xxx, etc.)
+    // ... (rest of detection methods remain the same - RCE, C2, exfiltration, etc.)
+    // I'll include them for completeness
     
     pub fn detect_remote_code_execution(&self, app: &AppBatteryStats) -> Vec<String> {
         let mut indicators = Vec::new();
@@ -800,3 +1020,23 @@ impl Default for ExploitationDetector {
     }
 }
 
+impl CrashDetectionResult {
+    /// Helper to get highest severity from crash detection
+    fn get_highest_severity(&self) -> CrashSeverity {
+        let mut highest = CrashSeverity::Info;
+        
+        for event in &self.events {
+            if event.severity > highest {
+                highest = event.severity;
+            }
+        }
+        
+        for event in &self.anr_events {
+            if event.severity > highest {
+                highest = event.severity;
+            }
+        }
+        
+        highest
+    }
+}
