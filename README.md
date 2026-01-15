@@ -29,7 +29,7 @@ Build the project:
 cargo build --release
 ```
 
-## Parsers
+## Parsers
 
 - Header
 - Memory
@@ -37,6 +37,11 @@ cargo build --release
 - Power
 - Process
 - USB
+- Battery
+- Crash
+
+
+Each parser could take the data from multiple place in the dumpstate file.
 
 ## Usage
 
@@ -48,22 +53,451 @@ cargo run --release -- --file-path=dumpstate.txt --parser-type header --parser-t
 
 it will allow the header and the memory parse to run.
 
-### Add new parser
+# Detection
 
+The bugreport extractor includes two complementary detection systems for identifying security threats in Android bugreports:
 
-The process is the same as before, as the core trait has not changed.
+## 1. Internal Exploitation Detection
 
-Create a new file in the src/parsers/ directory (e.g., src/parsers/json_lines_parser.rs).
+The internal detection system analyzes battery usage patterns and crash data to identify compromised applications and active attacks.
 
-Define your parser struct (e.g., pub struct JsonLinesParser;). Your struct must be Send and Sync (which is usually the default if it doesn't contain thread-unsafe types like Rc or RefCell).
+### Detection Modes
 
-Implement the Parser trait for your struct.
+#### Battery-Based Exploitation Detection
 
-Expose your new parser in src/parsers/mod.rs.
+Analyzes behavioral patterns in battery statistics to detect various exploitation types:
 
-Add your parser to the ParserType enum in src/parsers/mod.rs.
+- **Remote Code Execution (RCE)**
+  - Abnormal system CPU usage patterns
+  - Excessive process spawning
+  - Code injection indicators
 
-Update the get_parser factory function in src/parsers/mod.rs to include your new parser.
+- **Command & Control (C2)**
+  - Regular beaconing patterns via alarms
+  - GCM/FCM infrastructure abuse
+  - Rapid polling behavior
+
+- **Data Exfiltration**
+  - Upload-heavy network traffic
+  - Cellular network preference (avoiding monitoring)
+  - Large background data transmission
+
+- **Remote Access Trojan (RAT)**
+  - Long-running foreground services
+  - Frequent wakelock acquisition
+  - Screen/media capture activity
+
+- **Backdoor**
+  - Persistent boot receivers
+  - Hidden services with background activity
+  - Package update monitoring
+
+- **Privilege Escalation**
+  - System call dominance
+  - Root access attempts
+  - Permission abuse patterns
+
+- **Lateral Movement**
+  - Excessive IPC activity
+  - Content provider access to other apps
+
+#### Crash-Based Exploitation Detection
+
+Analyzes crash dumps (tombstones) and ANR events to detect memory exploitation attempts:
+
+- **Memory Exploitation Patterns**
+  - Heap spray detection
+  - ROP chain likelihood analysis
+  - NULL pointer dereference patterns
+  - Stack pivot detection
+
+- **Register Corruption Analysis**
+  - Program Counter (PC) corruption
+  - Stack Pointer (SP) manipulation
+  - Link Register (LR) patterns
+
+- **ANR Detection**
+  - Critical process deadlocks
+  - Resource exhaustion patterns
+  - Binder exploitation indicators
+
+- **Critical Process Monitoring**
+  - System server crashes
+  - Zygote crashes
+  - Other critical Android processes
+
+- **Vulnerable Library Detection**
+  - Known vulnerable libraries (libwebviewchromium, libimagecodec, etc.)
+  - Native code exploitation patterns
+
+#### Coordinated Threat Detection (Advanced)
+
+Cross-correlates battery and crash indicators to identify multi-vector attacks:
+
+- **Multi-Vector Attack Detection**
+  - Apps showing BOTH behavioral anomalies AND suspicious crashes
+  - Automatic severity escalation for combined threats
+  - Attack pattern description generation
+  - Enhanced confidence scoring
+
+- **Attack Pattern Examples**
+  ```
+  🚨 COORDINATED ATTACK
+  Package: com.suspicious.app
+  - RCE via battery analysis (87% confidence)
+  - Memory exploitation via crashes (heap spray + ROP chain)
+  → Multi-vector attack pattern indicates active compromise
+  ```
+
+#### Crash Timeline Analysis (Advanced)
+
+Analyzes temporal patterns in crashes to identify exploitation techniques:
+
+- **Regular Interval Detection**
+  - Crashes at consistent intervals (fuzzing indicator)
+  - Automated probing patterns
+
+- **Burst Pattern Detection**
+  - Multiple crashes in short time window
+  - Coordinated exploitation attempts
+
+- **Progressive Exploitation**
+  - Attack stage progression (NULL → heap spray → ROP)
+  - Systematic vulnerability probing
+
+- **Scheduled Patterns**
+  - Time-based attack triggers
+  - Crashes during specific hours
+
+- **Escalating Frequency**
+  - Increasing crash rate over time
+  - Attack intensification detection
+
+### Usage
+
+#### Basic Detection
+
+```bash
+# Battery-based detection only
+./bugreport_extractor -f bugreport.txt -p battery --detection
+
+# Crash-based detection only
+./bugreport_extractor -f bugreport.txt -p crash --detection
+
+# Unified detection (recommended - uses both)
+./bugreport_extractor -f bugreport.txt -p battery -p crash --detection
+```
+
+#### Custom Detection Configuration
+
+```bash
+# Use custom detection thresholds
+./bugreport_extractor -f bugreport.txt -p battery -p crash --detection config.json
+
+# Strict mode (high-security environments)
+./bugreport_extractor -f bugreport.txt -p battery --detection strict
+
+# Lenient mode (corporate/MDM environments)
+./bugreport_extractor -f bugreport.txt -p battery --detection lenient
+```
+
+#### Detection Configuration File
+
+Create a `config.json` file to customize detection thresholds:
+
+```json
+{
+  "description": "Custom detection configuration",
+  "enable_crash_detection": true,
+  "rce": {
+    "suspicious_cpu_system_ratio": 4.0,
+    "min_system_cpu_ms": 30000,
+    "unexpected_process_spawn_count": 10
+  },
+  "c2": {
+    "beaconing_alarm_count": 100,
+    "beaconing_avg_duration_ms": 500,
+    "regular_interval_variance": 0.3,
+    "gcm_abuse_count": 50
+  },
+  "exfiltration": {
+    "tx_rx_ratio": 3.0,
+    "min_upload_bytes": 50000000,
+    "cellular_preference_ratio": 2.5,
+    "background_upload_threshold": 20000000
+  }
+}
+```
+
+### Output Example
+
+```
+=== Security Detection Analysis ===
+
+🔴 Critical Threat | 1 battery-based exploitation(s) | 2 suspicious crash(es)
+Overall Severity: Critical
+Total Indicators: 8
+
+🔋 Battery-Based Exploitation Detected:
+
+  Package: com.suspicious.app
+  Type: Remote Code Execution (RCE)
+  Severity: Critical
+  Confidence: 87%
+  Indicators:
+    • RCE indicator: Abnormal system CPU usage - 45000ms system vs 8000ms user
+    • RCE indicator: Excessive process spawning - 25 process-related jobs
+
+💥 Crash-Based Security Issues:
+  Total Crashes: 15
+  Suspicious Crashes: 2
+  Total ANRs: 1
+  Suspicious ANRs: 1
+
+  [Critical] system_server
+  Signal: SIGSEGV
+  Fault Address: 0xdeadbeef
+  ⚠️  Heap spray detected!
+  ⚠️  ROP chain likely!
+  Indicators:
+    • Critical system process crash
+    • Exploitation-prone crash code: SEGV_ACCERR
+    • Memory corruption detected
+
+🚨 COORDINATED MULTI-VECTOR ATTACKS DETECTED:
+  Package: com.suspicious.app
+  Combined Severity: Critical
+  Confidence: 94%
+  
+  Attack Pattern:
+  Remote Code Execution detected via behavioral analysis, combined with 
+  2 suspicious crashes showing heap spray, ROP chain. This multi-vector 
+  attack pattern strongly indicates active compromise.
+
+⏱️  TEMPORAL ATTACK PATTERNS:
+  Risk Level: Critical
+  
+  🔄 Regular Interval Attack
+     10 crashes every ~60 seconds
+     ⚠️  Indicates automated fuzzing/probing
+     
+  🎯 Progressive Exploitation Detected
+     Attack stages: NULL deref → heap spray → ROP chain
+     🚨 CRITICAL: Systematic exploitation in progress!
+
+📋 Recommendations:
+  🚨 CRITICAL: com.suspicious.app shows RCE indicators - isolate device immediately
+  🚨 Critical memory exploitation detected - immediate forensic analysis required
+  🔧 Update vulnerable libraries: libimagecodec, libwebviewchromium
+  📊 Multiple high-risk crashes detected - device may be under active attack
+```
+
+---
+
+## 2. Sigma Rule Detection
+
+The tool integrates with the [Sigma](https://github.com/SigmaHQ/sigma) and [Sigma Zero](https://github.com/ping2A/sigmazero) detection format to identify suspicious patterns in parsed Android logs using community-maintained detection rules.
+
+### What is Sigma?
+
+Sigma is a generic signature format for SIEM systems that allows you to describe suspicious events in a structured way. The bugreport extractor can evaluate Sigma rules against parsed Android data.
+
+### Supported Log Sources
+
+Sigma rules can be applied to any parsed data:
+
+- **Battery Stats** - Process activity, network usage, wakelocks
+- **Process Logs** - Running processes, memory usage, CPU activity
+- **Crash Logs** - Tombstones, stack traces, signals
+- **Package Information** - Installed apps, permissions, versions
+- **USB Events** - Device connections, ADB usage
+- **Power Events** - Screen state, battery changes
+- **Memory Statistics** - RAM usage, low memory events
+
+### Usage
+
+```bash
+# Run Sigma detection with rules directory
+./bugreport_extractor \
+    -f bugreport.txt \
+    -p battery -p process -p crash \
+    --rules-dir /path/to/sigma/rules
+
+# Filter by minimum severity level
+./bugreport_extractor \
+    -f bugreport.txt \
+    -p battery \
+    --rules-dir ./rules \
+    --min-level high
+
+# Show detailed log information with matches
+./bugreport_extractor \
+    -f bugreport.txt \
+    -p battery \
+    --rules-dir ./rules \
+    --show-log-details
+```
+
+### Creating Sigma Rules for Android
+
+Example Sigma rule for detecting suspicious app behavior:
+
+```yaml
+title: Suspicious Background Network Activity
+id: 12345678-1234-1234-1234-123456789abc
+status: experimental
+description: Detects apps with excessive background network usage
+logsource:
+    product: android
+    service: battery
+detection:
+    selection:
+        network_tx_mobile: '>50000000'  # >50MB uploaded
+        foreground_time_ms: '<300000'   # <5 minutes foreground
+    condition: selection
+falsepositives:
+    - Cloud backup applications
+    - Sync services
+level: medium
+tags:
+    - android
+    - data_exfiltration
+```
+
+Example rule for crash detection:
+
+```yaml
+title: Critical Process Crash
+id: 87654321-4321-4321-4321-210987654321
+status: stable
+description: Detects crashes in critical Android system processes
+logsource:
+    product: android
+    service: crash
+detection:
+    selection:
+        process_name:
+            - 'system_server'
+            - 'zygote'
+            - 'surfaceflinger'
+        signal: 'SIGSEGV'
+    condition: selection
+falsepositives:
+    - Known system bugs
+level: high
+tags:
+    - android
+    - system_crash
+```
+
+### Sigma Output
+
+```
+=== Sigma Rule Evaluation ===
+
+[HIGH] Suspicious Background Network Activity
+  Package: com.suspicious.app
+  Details: 75MB uploaded with only 2 minutes foreground time
+  Tags: android, data_exfiltration
+  
+[CRITICAL] Critical Process Crash
+  Process: system_server
+  Signal: SIGSEGV
+  Fault Address: 0xdeadbeef
+  Tags: android, system_crash
+
+Summary:
+  Total logs evaluated: 1,245
+  Matches found: 12
+  Critical: 2
+  High: 5
+  Medium: 3
+  Low: 2
+```
+
+### Combining Internal and Sigma Detection
+
+Both detection systems can run simultaneously:
+
+```bash
+# Run both detection systems
+./bugreport_extractor \
+    -f bugreport.txt \
+    -p battery -p crash \
+    --detection \
+    --rules-dir ./sigma-rules
+
+# This will:
+# 1. Parse battery and crash data
+# 2. Run internal exploitation detection (battery + crash + coordinated)
+# 3. Evaluate Sigma rules against all parsed data
+# 4. Output combined security assessment
+```
+
+The internal detection focuses on exploitation techniques and behavioral patterns, while Sigma rules can be customized for specific threats, compliance requirements, or organizational policies.
+
+### Advantages of Each System
+
+**Internal Detection:**
+- ✅ Purpose-built for Android exploitation
+- ✅ Cross-correlation between data sources
+- ✅ Temporal pattern analysis
+- ✅ No configuration needed (works out-of-box)
+- ✅ Automatic severity escalation
+
+**Sigma Detection:**
+- ✅ Flexible rule creation
+- ✅ Community-maintained rule sets
+- ✅ Easy to customize for specific threats
+- ✅ Portable across different tools
+- ✅ Compliance and policy enforcement
+
+**Recommended:** Use both systems together for comprehensive threat detection - internal detection for exploitation and Sigma for custom/organizational rules.
+
+---
+
+## Detection Architecture
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                     Bugreport File                          │
+└────────────────────────┬────────────────────────────────────┘
+                         │
+                         ▼
+         ┌───────────────────────────────┐
+         │      Parallel Parsing          │
+         │  (Battery, Crash, Process...)  │
+         └───────────────────────────────┘
+                         │
+            ┌────────────┴────────────┐
+            ▼                         ▼
+   ┌────────────────┐        ┌────────────────┐
+   │ Internal       │        │ Sigma Rule     │
+   │ Detection      │        │ Evaluation     │
+   └────────────────┘        └────────────────┘
+            │                         │
+            ▼                         ▼
+   ┌────────────────┐        ┌────────────────┐
+   │ • Battery      │        │ • Pattern      │
+   │   Exploitation │        │   Matching     │
+   │ • Crash        │        │ • Custom       │
+   │   Analysis     │        │   Rules        │
+   │ • Coordinated  │        │ • Severity     │
+   │   Threats      │        │   Levels       │
+   │ • Timeline     │        │                │
+   │   Patterns     │        │                │
+   └────────────────┘        └────────────────┘
+            │                         │
+            └────────────┬────────────┘
+                         ▼
+              ┌──────────────────┐
+              │ Unified Security │
+              │ Report           │
+              └──────────────────┘
+```
+
+---
+
 
 ## License
 
