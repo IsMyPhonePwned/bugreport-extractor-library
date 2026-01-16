@@ -1,7 +1,8 @@
 use super::Parser;
-use serde_json::{json, Value};
+use serde_json::{json, Map, Value};
 use std::error::Error;
 use serde::Serialize;
+use std::collections::HashMap;
 
 #[derive(Serialize, Debug)]
 struct PowerEvent {
@@ -11,10 +12,23 @@ struct PowerEvent {
     details: Option<String>,
 }
 
-#[derive(Serialize, Debug)]
+#[derive(Debug)]
 struct ResetReason {
     reason: String,
     stack_trace: Vec<String>,
+    timestamp: Option<String>,
+    event_type: Option<String>,
+    flags: Option<String>,
+    details: Option<String>,
+}
+
+#[derive(Debug)]
+struct PowerEntry {
+    timestamp: String,  // The timestamp line like "25/11/08 17:15:29"
+    reason: Option<String>,
+    stack_trace: Vec<String>,
+    history_events: Vec<PowerEvent>,
+    other_lines: Vec<String>,
 }
 
 pub struct PowerParser;
@@ -60,8 +74,7 @@ impl Parser for PowerParser {
     fn parse(&self, data: &[u8]) -> Result<Value, Box<dyn Error + Send + Sync>> {
         let content = String::from_utf8_lossy(data);
         
-        let mut history = Vec::new();
-        let mut reasons = Vec::new();
+        let mut entries: HashMap<String, PowerEntry> = HashMap::new();
 
         const START_DELIMITER: &str = "------ POWER OFF RESET REASON";
         
@@ -70,63 +83,112 @@ impl Parser for PowerParser {
             let section_content = &content[start_index..];
             let mut lines = section_content.lines().skip(1); // Skip the header line
 
-            let mut current_reason: Option<ResetReason> = None;
+            let mut current_entry: Option<PowerEntry> = None;
 
             while let Some(line) = lines.next() {
                 let trimmed = line.trim();
                 if trimmed.starts_with("------") {
                     break;
                 }
+                
+                // Check if this is a timestamp line (format like "25/11/08 17:15:29")
+                // This marks the start of a new entry
+                if trimmed.chars().next().map_or(false, |c| c.is_digit(10)) 
+                    && trimmed.contains('/') && trimmed.contains(':') 
+                    && !line.contains('|') {
+                    // Save previous entry if exists
+                    if let Some(entry) = current_entry.take() {
+                        entries.insert(entry.timestamp.clone(), entry);
+                    }
+                    // Start new entry with this timestamp
+                    current_entry = Some(PowerEntry {
+                        timestamp: trimmed.to_string(),
+                        reason: None,
+                        stack_trace: Vec::new(),
+                        history_events: Vec::new(),
+                        other_lines: Vec::new(),
+                    });
+                    continue;
+                }
 
-                // Parse History Lines 
+                // Parse History Lines (lines with pipes)
                 if line.contains('|') {
                     if let Some(event) = Self::parse_history_line(line) {
-                        history.push(event);
-                    }
-                    // Reset current reason parsing if we hit a history line
-                    if let Some(reason) = current_reason.take() {
-                        reasons.push(reason);
+                        if let Some(ref mut entry) = current_entry {
+                            entry.history_events.push(event);
+                        }
                     }
                     continue;
                 }
 
                 // Parse Reason Lines
                 if let Some((_, reason_text)) = trimmed.split_once("reason :") {
-                    // Save previous reason if exists
-                    if let Some(reason) = current_reason.take() {
-                        reasons.push(reason);
+                    let reason_str = reason_text.trim().to_string();
+                    if let Some(ref mut entry) = current_entry {
+                        entry.reason = Some(reason_str);
                     }
-                    current_reason = Some(ResetReason {
-                        reason: reason_text.trim().to_string(),
-                        stack_trace: Vec::new(),
-                    });
                     continue;
                 }
 
-                // If we are currently parsing a reason, add lines to stack trace
-                if let Some(ref mut reason_obj) = current_reason {
-                    // Stop capturing stack trace if we hit an empty line or a date-like line
-                    if trimmed.is_empty() {
-                       // continue capturing? often stack traces have no empty lines inside.
-                       // let's assume empty line ends the block for safety, or we can just keep adding.
-                    } else if trimmed.chars().next().map_or(false, |c| c.is_digit(10)) {
-                        // Likely a timestamp line "25/02/20 10:07:29", stop capturing
-                        reasons.push(current_reason.take().unwrap());
-                    } else {
-                        reason_obj.stack_trace.push(trimmed.to_string());
+                // All other lines go to stack_trace if we have a reason, otherwise other_lines
+                if let Some(ref mut entry) = current_entry {
+                    if entry.reason.is_some() && !trimmed.is_empty() {
+                        entry.stack_trace.push(trimmed.to_string());
+                    } else if !trimmed.is_empty() {
+                        entry.other_lines.push(trimmed.to_string());
                     }
                 }
             }
-            // Push the last one if exists
-            if let Some(reason) = current_reason {
-                reasons.push(reason);
+            
+            // Save the last entry if exists
+            if let Some(entry) = current_entry {
+                entries.insert(entry.timestamp.clone(), entry);
             }
         }
 
-        Ok(json!({
-            "power_history": history,
-            "reset_reasons": reasons
-        }))
+        // Build the result object with all entries keyed by timestamp
+        let mut result_map = Map::new();
+        
+        for (timestamp_key, entry) in entries {
+            let mut entry_obj = Map::new();
+            
+            // Add reason if present
+            if let Some(ref reason) = entry.reason {
+                entry_obj.insert("reason".to_string(), json!(reason));
+            }
+            
+            // Add stack trace
+            if !entry.stack_trace.is_empty() {
+                entry_obj.insert("stack_trace".to_string(), json!(entry.stack_trace));
+            }
+            
+            // Add history events
+            if !entry.history_events.is_empty() {
+                let mut events_array = Vec::new();
+                for event in entry.history_events {
+                    let mut event_obj = Map::new();
+                    event_obj.insert("event_type".to_string(), json!(event.event_type));
+                    if let Some(ref fl) = event.flags {
+                        event_obj.insert("flags".to_string(), json!(fl));
+                    }
+                    if let Some(ref det) = event.details {
+                        event_obj.insert("details".to_string(), json!(det));
+                    }
+                    event_obj.insert("timestamp".to_string(), json!(event.timestamp));
+                    events_array.push(json!(event_obj));
+                }
+                entry_obj.insert("history_events".to_string(), json!(events_array));
+            }
+            
+            // Add other lines if any
+            if !entry.other_lines.is_empty() {
+                entry_obj.insert("other_lines".to_string(), json!(entry.other_lines));
+            }
+            
+            result_map.insert(timestamp_key, json!(entry_obj));
+        }
+
+        Ok(json!(result_map))
     }
 }
 
@@ -152,26 +214,29 @@ java.lang.Exception: It is not an exception!!
         let parser = PowerParser::new().unwrap();
         let result = parser.parse(data).unwrap();
 
-        let history = result["power_history"].as_array().unwrap();
-        assert_eq!(history.len(), 2);
+        // All entries are now keyed by the timestamp line (like "25/02/20 10:07:29")
+        assert!(result.get("25/02/20 10:07:29").is_some());
         
-        let event1 = &history[0];
-        assert_eq!(event1["timestamp"], "10:07:32+0100"); 
+        // Check the entry
+        let entry = &result["25/02/20 10:07:29"];
+        assert_eq!(entry["reason"], "no power");
         
+        let stack = entry["stack_trace"].as_array().unwrap();
+        assert_eq!(stack.len(), 3);
+        assert!(stack[0].as_str().unwrap().contains("java.lang.Exception"));
+        
+        // Check history events
+        let history_events = entry["history_events"].as_array().unwrap();
+        assert_eq!(history_events.len(), 2);
+        
+        let event1 = &history_events[0];
         assert_eq!(event1["event_type"], "SHUTDOWN");
         assert_eq!(event1["details"], "REASON: no power [39]");
+        assert_eq!(event1["timestamp"], "10:07:32+0100");
 
-        let event2 = &history[1];
+        let event2 = &history_events[1];
         assert_eq!(event2["event_type"], "ON");
         assert_eq!(event2["flags"], "NP");
         assert!(event2["details"].as_str().unwrap().contains("A348BXXU7CXK1"));
-
-        let reasons = result["reset_reasons"].as_array().unwrap();
-        assert_eq!(reasons.len(), 1);
-        assert_eq!(reasons[0]["reason"], "no power");
-        
-        let stack = reasons[0]["stack_trace"].as_array().unwrap();
-        assert_eq!(stack.len(), 3);
-        assert!(stack[0].as_str().unwrap().contains("java.lang.Exception"));
     }
 }
