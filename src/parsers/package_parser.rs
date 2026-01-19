@@ -619,9 +619,9 @@ impl Parser for PackageParser {
             // Add service block if it has content (for backward compatibility)
             // We'll filter install_logs later to exclude those joined to packages
             if !section_map.is_empty() || !install_logs.is_empty() {
-                if !install_logs.is_empty() {
-                    section_map.insert("install_logs".to_string(), json!(install_logs));
-                }
+            if !install_logs.is_empty() {
+                section_map.insert("install_logs".to_string(), json!(install_logs));
+            }
                 if !section_map.is_empty() {
                     results.push(json!(section_map));
                 }

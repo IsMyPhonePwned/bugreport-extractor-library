@@ -172,6 +172,7 @@ fn format_parser_name(parser_type: &ParserType) -> &str {
         ParserType::Header => "Header",
         ParserType::Memory => "Memory",
         ParserType::Crash => "Crash",
+        ParserType::Network => "Network",
     }
 }
 
@@ -204,6 +205,18 @@ fn format_item(parser_type: &ParserType, item: &Value) -> String {
                 format!("{}:{} ({})", vid, pid, p)
             } else {
                 format!("{}:{}", vid, pid)
+            }
+        }
+        ParserType::Network => {
+            // Format network items (could be socket, interface, or network stats)
+            if let Some(local_addr) = item.get("local_address").and_then(|a| a.as_str()) {
+                format!("{}", local_addr)
+            } else if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                format!("{}", name)
+            } else if let Some(pkg) = item.get("package_name").and_then(|p| p.as_str()) {
+                format!("{}", pkg)
+            } else {
+                "unknown".to_string()
             }
         }
         ParserType::Power => {

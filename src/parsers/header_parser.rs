@@ -27,7 +27,7 @@ impl Parser for HeaderParser {
         // We first split the entire file into potential sections based on the "== dumpstate:" header.
         // Handle both cases: header at start of file (no leading newline) and header in middle of file
         let delimiter = "========================================================\n== dumpstate: ";
-        
+
         // Normalize: ensure we can split consistently by adding a marker if it starts at file beginning
         let normalized_content = if content.starts_with(delimiter) {
             format!("\n{}", content)
@@ -45,14 +45,14 @@ impl Parser for HeaderParser {
         
         let result = if let Some(section) = first_section {
             // The section now starts with the title (timestamp), e.g., "2025-09-11 10:35:38\n========================================================\n\nBuild:..."
-            // We split this into the title line and the rest of the content.
-            let (title_line, rest) = section
-                .split_once("\n========================================================\n\n")
-                .unwrap_or((section, "")); // Fallback if the second part of header is missing
+                // We split this into the title line and the rest of the content.
+                let (title_line, rest) = section
+                    .split_once("\n========================================================\n\n")
+                    .unwrap_or((section, "")); // Fallback if the second part of header is missing
 
-            // The content block is terminated by the next section header `------ ` or end of file.
-            // We take everything before the next header.
-            let content_block = rest.split("\n------ ").next().unwrap_or("").trim();
+                // The content block is terminated by the next section header `------ ` or end of file.
+                // We take everything before the next header.
+                let content_block = rest.split("\n------ ").next().unwrap_or("").trim();
 
             // Parse key-value pairs from the content lines
             let mut result_map = serde_json::Map::new();

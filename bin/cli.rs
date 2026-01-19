@@ -12,7 +12,7 @@ use sigma_zero::engine::SigmaEngine;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    BatteryParser, CrashParser, HeaderParser, MemoryParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
+    BatteryParser, CrashParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
 };
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
@@ -178,6 +178,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Crash => {
                 let crash_parser = CrashParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(crash_parser)));
+            },
+            ParserType::Network => {
+                let network_parser = NetworkParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(network_parser)));
             },
         }
     }
@@ -501,6 +505,10 @@ fn run_comparison_mode(
                 let parser = CrashParser::new().expect("Failed to create CrashParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::Network => {
+                let parser = NetworkParser::new().expect("Failed to create NetworkParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
         }
     }
     
@@ -552,6 +560,10 @@ fn run_comparison_mode(
             },
             ParserType::Crash => {
                 let parser = CrashParser::new().expect("Failed to create CrashParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Network => {
+                let parser = NetworkParser::new().expect("Failed to create NetworkParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
             },
         }

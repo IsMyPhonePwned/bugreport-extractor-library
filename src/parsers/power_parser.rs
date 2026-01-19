@@ -90,7 +90,7 @@ impl Parser for PowerParser {
                 if trimmed.starts_with("------") {
                     break;
                 }
-                
+
                 // Check if this is a timestamp line (format like "25/11/08 17:15:29")
                 // This marks the start of a new entry
                 if trimmed.chars().next().map_or(false, |c| c.is_digit(10)) 
@@ -116,7 +116,7 @@ impl Parser for PowerParser {
                     if let Some(event) = Self::parse_history_line(line) {
                         if let Some(ref mut entry) = current_entry {
                             entry.history_events.push(event);
-                        }
+                    }
                     }
                     continue;
                 }

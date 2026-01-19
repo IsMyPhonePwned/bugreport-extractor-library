@@ -10,6 +10,7 @@ pub mod process_parser;
 pub mod power_parser;
 pub mod usb_parser;
 pub mod crash_parser;
+pub mod network_parser;
 
 pub use header_parser::HeaderParser;
 pub use memory_parser::MemoryParser;
@@ -19,6 +20,7 @@ pub use process_parser::ProcessParser;
 pub use power_parser::PowerParser;
 pub use usb_parser::UsbParser;
 pub use crash_parser::CrashParser;
+pub use network_parser::NetworkParser;
 
 /// The core trait for all parsers.
 /// Any new parser must implement this trait.
@@ -39,7 +41,8 @@ pub enum ParserType {
     Process,
     Power,
     Usb,
-    Crash
+    Crash,
+    Network
 }
 
 /// WASM-compatible parser type (without clap::ValueEnum)
@@ -53,6 +56,7 @@ pub enum ParserType {
     Process,
     Power,
     Usb,
-    Crash
+    Crash,
+    Network
 }
 
