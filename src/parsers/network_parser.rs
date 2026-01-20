@@ -5,8 +5,12 @@ use std::error::Error;
 #[derive(Debug, Clone)]
 struct SocketConnection {
     protocol: String,
-    local_address: String,
-    remote_address: String,
+    local_address: String,  // Combined format for backward compatibility
+    remote_address: String, // Combined format for backward compatibility
+    local_ip: Option<String>,    // Extracted IP address
+    local_port: Option<u16>,     // Extracted port
+    remote_ip: Option<String>,   // Extracted IP address
+    remote_port: Option<u16>,    // Extracted port
     state: Option<String>,
     uid: Option<u32>,
     inode: Option<u64>,
@@ -46,6 +50,19 @@ impl SocketConnection {
         }
         if self.socket_key.is_none() {
             self.socket_key = other.socket_key.clone();
+        }
+        // Merge IP and port fields
+        if self.local_ip.is_none() {
+            self.local_ip = other.local_ip.clone();
+        }
+        if self.local_port.is_none() {
+            self.local_port = other.local_port;
+        }
+        if self.remote_ip.is_none() {
+            self.remote_ip = other.remote_ip.clone();
+        }
+        if self.remote_port.is_none() {
+            self.remote_port = other.remote_port;
         }
         // Additional info from ss command is more detailed, prefer it
         if other.additional_info.is_some() {
@@ -200,6 +217,37 @@ impl NetworkParser {
         }
         hex_str.to_string()
     }
+
+    // Parse address:port string and return (address, port)
+    // Handles formats like "192.168.1.1:8080", "[::1]:8080", "*:*", "0.0.0.0:0"
+    fn parse_address_port(addr_port: &str) -> (String, Option<u16>) {
+        // Handle IPv6 addresses in brackets: [::1]:8080
+        if addr_port.starts_with('[') {
+            if let Some(bracket_end) = addr_port.find(']') {
+                if let Some(colon_after_bracket) = addr_port[bracket_end + 1..].find(':') {
+                    let ip = addr_port[1..bracket_end].to_string();
+                    let port_str = &addr_port[bracket_end + 1 + colon_after_bracket + 1..];
+                    let port = port_str.parse::<u16>().ok();
+                    return (ip, port);
+                }
+            }
+        }
+        
+        // Handle regular format: address:port or *:*
+        if let Some(colon_pos) = addr_port.rfind(':') {
+            let address = addr_port[..colon_pos].to_string();
+            let port_str = &addr_port[colon_pos + 1..];
+            let port = if port_str == "*" || port_str.is_empty() {
+                None
+            } else {
+                port_str.parse::<u16>().ok()
+            };
+            (address, port)
+        } else {
+            // No port found, just address
+            (addr_port.to_string(), None)
+        }
+    }
 }
 
 impl Parser for NetworkParser {
@@ -299,10 +347,18 @@ impl Parser for NetworkParser {
                             }
                         }
 
+                        // Parse addresses and ports
+                        let (local_ip, local_port) = Self::parse_address_port(&local_addr);
+                        let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
+
                         let mut socket = SocketConnection {
                             protocol,
                             local_address: local_addr,
                             remote_address: remote_addr,
+                            local_ip: Some(local_ip),
+                            local_port,
+                            remote_ip: Some(remote_ip),
+                            remote_port,
                             state,
                             uid,
                             inode,
@@ -348,10 +404,18 @@ impl Parser for NetworkParser {
                             Self::parse_ip_address(remote_ip_hex),
                             Self::parse_port(remote_port_hex));
 
+                        // Parse addresses and ports
+                        let (local_ip, local_port) = Self::parse_address_port(&local_addr);
+                        let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
+
                         let mut socket = SocketConnection {
                             protocol: "tcp".to_string(),
                             local_address: local_addr,
                             remote_address: remote_addr,
+                            local_ip: Some(local_ip),
+                            local_port,
+                            remote_ip: Some(remote_ip),
+                            remote_port,
                             state: Some(format!("0x{}", state_hex)),
                             uid: uid_str.parse().ok(),
                             inode: inode_str.parse().ok(),
@@ -441,10 +505,18 @@ impl Parser for NetworkParser {
                                 }
                             }
                             
+                            // Parse addresses and ports
+                            let (local_ip, local_port) = Self::parse_address_port(&local_addr);
+                            let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
+
                             current_socket = Some(SocketConnection {
                                 protocol,
                                 local_address: local_addr,
                                 remote_address: remote_addr,
+                                local_ip: Some(local_ip),
+                                local_port,
+                                remote_ip: Some(remote_ip),
+                                remote_port,
                                 state: Some(state_str),
                                 uid,
                                 inode,
@@ -909,8 +981,22 @@ impl Parser for NetworkParser {
             let sockets_json: Vec<Value> = socket_map.into_values().map(|s| {
                 let mut obj = Map::new();
                 obj.insert("protocol".to_string(), json!(s.protocol));
+                // Keep combined format for backward compatibility
                 obj.insert("local_address".to_string(), json!(s.local_address));
                 obj.insert("remote_address".to_string(), json!(s.remote_address));
+                // Add separate IP and port fields
+                if let Some(ref local_ip) = s.local_ip {
+                    obj.insert("local_ip".to_string(), json!(local_ip));
+                }
+                if let Some(local_port) = s.local_port {
+                    obj.insert("local_port".to_string(), json!(local_port));
+                }
+                if let Some(ref remote_ip) = s.remote_ip {
+                    obj.insert("remote_ip".to_string(), json!(remote_ip));
+                }
+                if let Some(remote_port) = s.remote_port {
+                    obj.insert("remote_port".to_string(), json!(remote_port));
+                }
                 if let Some(state) = s.state {
                     obj.insert("state".to_string(), json!(state));
                 }
@@ -1068,6 +1154,11 @@ udp        0      0 192.168.8.183:40988                                 62.201.1
         assert_eq!(syn_sent["inode"], 1136844);
         assert_eq!(syn_sent["recv_q"], 0);
         assert_eq!(syn_sent["send_q"], 1);
+        // Verify IP and port are extracted separately
+        assert_eq!(syn_sent["local_ip"], "192.168.8.183");
+        assert_eq!(syn_sent["local_port"], 55191);
+        assert_eq!(syn_sent["remote_ip"], "51.116.253.169");
+        assert_eq!(syn_sent["remote_port"], 443);
     }
 
     #[test]
