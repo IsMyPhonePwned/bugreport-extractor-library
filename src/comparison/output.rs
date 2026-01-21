@@ -71,6 +71,8 @@ fn output_parser_comparison(comparison: &ParserComparison) {
         ParserType::Power => "⚡",
         ParserType::Usb => "🔌",
         ParserType::Battery => "🔋",
+        ParserType::Network => "🌐",
+        ParserType::Bluetooth => "📱",
         _ => "📊",
     };
     
@@ -173,6 +175,7 @@ fn format_parser_name(parser_type: &ParserType) -> &str {
         ParserType::Memory => "Memory",
         ParserType::Crash => "Crash",
         ParserType::Network => "Network",
+        ParserType::Bluetooth => "Bluetooth",
     }
 }
 
@@ -213,10 +216,24 @@ fn format_item(parser_type: &ParserType, item: &Value) -> String {
                 format!("{}", local_addr)
             } else if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
                 format!("{}", name)
-            } else if let Some(pkg) = item.get("package_name").and_then(|p| p.as_str()) {
-                format!("{}", pkg)
             } else {
-                "unknown".to_string()
+                format!("{:?}", item)
+            }
+        },
+        ParserType::Bluetooth => {
+            // Format Bluetooth devices
+            if let Some(name) = item.get("name").and_then(|n| n.as_str()) {
+                if let Some(mac) = item.get("mac_address").and_then(|m| m.as_str()) {
+                    format!("{} ({})", name, mac)
+                } else if let Some(masked) = item.get("masked_address").and_then(|m| m.as_str()) {
+                    format!("{} ({})", name, masked)
+                } else {
+                    format!("{}", name)
+                }
+            } else if let Some(mac) = item.get("mac_address").and_then(|m| m.as_str()) {
+                format!("{}", mac)
+            } else {
+                format!("{:?}", item)
             }
         }
         ParserType::Power => {

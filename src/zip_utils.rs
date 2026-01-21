@@ -64,20 +64,23 @@ pub fn extract_dumpstate_from_zip_bytes(
 fn extract_dumpstate_from_archive<R: Read + std::io::Seek>(
     archive: &mut ZipArchive<R>,
 ) -> Result<Vec<u8>, Box<dyn Error + Send + Sync>> {
-    // Try to find dumpstate.txt (case-insensitive search)
+    // First pass: Look for exact match "dumpstate.txt" (case-insensitive, ignoring path)
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
-        let name = file.name().to_lowercase();
+        let name = file.name();
+        let name_lower = name.to_lowercase();
         
-        // Check if this is the dumpstate file
-        if name.contains("dumpstate.txt") || 
-           (name.starts_with("bugreport-") && name.ends_with(".txt") && !name.contains("dumpstate_log")) {
-            
+        // Extract just the filename (without path)
+        let filename = name.split('/').last().unwrap_or(name);
+        let filename_lower = filename.to_lowercase();
+        
+        // Check if this is exactly "dumpstate.txt" (ignoring path and case)
+        if filename_lower == "dumpstate.txt" {
             #[cfg(not(target_arch = "wasm32"))]
-            tracing::info!("Found bugreport data in: {}", file.name());
+            tracing::info!("Found dumpstate.txt: {}", name);
             
             #[cfg(target_arch = "wasm32")]
-            web_sys::console::log_1(&format!("Found bugreport data in: {}", file.name()).into());
+            web_sys::console::log_1(&format!("Found dumpstate.txt: {}", name).into());
             
             let mut contents = Vec::with_capacity(file.size() as usize);
             file.read_to_end(&mut contents)?;
@@ -86,24 +89,109 @@ fn extract_dumpstate_from_archive<R: Read + std::io::Seek>(
         }
     }
     
-    // If we didn't find it by the above patterns, try the first large .txt
+    // Second pass: Look for dumpstate-*.txt pattern (e.g., dumpstate-2026-01-21-11-06-58.txt)
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name();
+        let name_lower = name.to_lowercase();
         
-        // Look for any large .txt file (dumpstate.txt is typically several MB)
-        if name.ends_with(".txt") && file.size() > 100_000 {
+        // Extract just the filename (without path)
+        let filename = name.split('/').last().unwrap_or(name);
+        let filename_lower = filename.to_lowercase();
+        
+        // Check if this matches dumpstate-*.txt pattern (but not dumpstate_log)
+        if filename_lower.starts_with("dumpstate-") && 
+           filename_lower.ends_with(".txt") && 
+           !filename_lower.contains("dumpstate_log") &&
+           !filename_lower.contains("dumpstate_debug") {
             #[cfg(not(target_arch = "wasm32"))]
-            tracing::warn!("Using {} as dumpstate (couldn't find dumpstate.txt)", name);
+            tracing::info!("Found dumpstate file: {}", name);
             
             #[cfg(target_arch = "wasm32")]
-            web_sys::console::warn_1(&format!("Using {} as dumpstate", name).into());
+            web_sys::console::log_1(&format!("Found dumpstate file: {}", name).into());
             
             let mut contents = Vec::with_capacity(file.size() as usize);
             file.read_to_end(&mut contents)?;
             
             return Ok(contents);
         }
+    }
+    
+    // Third pass: Look for files containing "dumpstate.txt" in the name (but not dumpstate_log)
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name();
+        let name_lower = name.to_lowercase();
+        
+        // Check if this is a dumpstate file (but not a log file)
+        if name_lower.contains("dumpstate.txt") && !name_lower.contains("dumpstate_log") {
+            #[cfg(not(target_arch = "wasm32"))]
+            tracing::info!("Found bugreport data in: {}", name);
+            
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&format!("Found bugreport data in: {}", name).into());
+            
+            let mut contents = Vec::with_capacity(file.size() as usize);
+            file.read_to_end(&mut contents)?;
+            
+            return Ok(contents);
+        }
+    }
+    
+    // Fourth pass: Look for bugreport-*.txt files (but not dumpstate_log)
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name();
+        let name_lower = name.to_lowercase();
+        
+        // Check for bugreport-*.txt pattern
+        if name_lower.starts_with("bugreport-") && name_lower.ends_with(".txt") && !name_lower.contains("dumpstate_log") {
+            #[cfg(not(target_arch = "wasm32"))]
+            tracing::info!("Found bugreport file: {}", name);
+            
+            #[cfg(target_arch = "wasm32")]
+            web_sys::console::log_1(&format!("Found bugreport file: {}", name).into());
+            
+            let mut contents = Vec::with_capacity(file.size() as usize);
+            file.read_to_end(&mut contents)?;
+            
+            return Ok(contents);
+        }
+    }
+    
+    // Fifth pass: Look for any large .txt file (dumpstate.txt is typically several MB)
+    // Prefer files at the root level
+    let mut candidates: Vec<(String, u64, usize)> = Vec::new();
+    for i in 0..archive.len() {
+        let mut file = archive.by_index(i)?;
+        let name = file.name();
+        
+        // Look for any large .txt file
+        if name.ends_with(".txt") && file.size() > 100_000 {
+            let depth = name.matches('/').count();
+            candidates.push((name.to_string(), file.size(), depth));
+        }
+    }
+    
+    // Sort by depth (prefer root level) then by size (prefer larger files)
+    candidates.sort_by(|a, b| {
+        a.2.cmp(&b.2).then(b.1.cmp(&a.1))
+    });
+    
+    if let Some((best_name, _, _)) = candidates.first() {
+        // Re-open the file by name
+        let mut file = archive.by_name(best_name)?;
+        
+        #[cfg(not(target_arch = "wasm32"))]
+        tracing::warn!("Using {} as dumpstate (couldn't find dumpstate.txt)", best_name);
+        
+        #[cfg(target_arch = "wasm32")]
+        web_sys::console::warn_1(&format!("Using {} as dumpstate", best_name).into());
+        
+        let mut contents = Vec::with_capacity(file.size() as usize);
+        file.read_to_end(&mut contents)?;
+        
+        return Ok(contents);
     }
     
     Err("Could not find dumpstate.txt or any suitable bugreport file in ZIP archive".into())
@@ -188,6 +276,45 @@ mod tests {
         
         assert!(content.contains("dumpstate content"));
         assert!(content.contains("MEMORY INFO"));
+    }
+    
+    #[cfg(not(target_arch = "wasm32"))]
+    #[test]
+    fn test_extract_dumpstate_with_date() {
+        use std::io::Write;
+        use zip::write::FileOptions;
+        
+        // Create a test ZIP with dumpstate-YYYY-MM-DD-HH-MM-SS.txt pattern
+        let mut zip_buffer = std::io::Cursor::new(Vec::new());
+        {
+            let mut zip = zip::ZipWriter::new(&mut zip_buffer);
+            
+            // Add some dummy files
+            zip.start_file("version.txt", FileOptions::default()).unwrap();
+            zip.write_all(b"Android version info").unwrap();
+            
+            // Add the dumpstate file with date pattern
+            zip.start_file("dumpstate-2026-01-21-11-06-58.txt", FileOptions::default()).unwrap();
+            zip.write_all(b"========================================================\n\
+                            == dumpstate: 2026-01-21 11:06:58\n\
+                            ========================================================\n\
+                            This is the dumpstate content with date\n\
+                            ------ MEMORY INFO ------\n").unwrap();
+            
+            zip.start_file("dumpstate_log.txt", FileOptions::default()).unwrap();
+            zip.write_all(b"Log file content").unwrap();
+            
+            zip.finish().unwrap();
+        }
+        
+        // Extract dumpstate file
+        let zip_data = zip_buffer.into_inner();
+        let result = extract_dumpstate_from_zip_bytes(&zip_data).unwrap();
+        let content = String::from_utf8_lossy(&result);
+        
+        assert!(content.contains("dumpstate content with date"));
+        assert!(content.contains("MEMORY INFO"));
+        assert!(content.contains("2026-01-21"));
     }
 }
 

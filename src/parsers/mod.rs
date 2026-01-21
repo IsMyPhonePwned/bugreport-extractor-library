@@ -11,6 +11,7 @@ pub mod power_parser;
 pub mod usb_parser;
 pub mod crash_parser;
 pub mod network_parser;
+pub mod bluetooth_parser;
 
 pub use header_parser::HeaderParser;
 pub use memory_parser::MemoryParser;
@@ -21,6 +22,7 @@ pub use power_parser::PowerParser;
 pub use usb_parser::UsbParser;
 pub use crash_parser::CrashParser;
 pub use network_parser::NetworkParser;
+pub use bluetooth_parser::BluetoothParser;
 
 /// The core trait for all parsers.
 /// Any new parser must implement this trait.
@@ -42,7 +44,8 @@ pub enum ParserType {
     Power,
     Usb,
     Crash,
-    Network
+    Network,
+    Bluetooth
 }
 
 /// WASM-compatible parser type (without clap::ValueEnum)
@@ -57,6 +60,7 @@ pub enum ParserType {
     Power,
     Usb,
     Crash,
-    Network
+    Network,
+    Bluetooth
 }
 
