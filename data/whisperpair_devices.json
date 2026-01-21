@@ -1,0 +1,426 @@
+[
+  {
+    "name": "AK UW100MKII",
+    "manufacturer": "Dreamus Company",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "SRS-XV500",
+    "manufacturer": "Sony",
+    "type": "speaker"
+  },
+  {
+    "name": "Bose QuietComfort 35 II",
+    "manufacturer": "Bose",
+    "type": "headphones"
+  },
+  {
+    "name": "SUMMIT",
+    "manufacturer": "Montblanc",
+    "type": "wearable"
+  },
+  {
+    "name": "JBL x TOMORROWLAND",
+    "manufacturer": "Harman",
+    "type": "headphones"
+  },
+  {
+    "name": "Sonos Ace",
+    "manufacturer": "Sonos Inc",
+    "type": "headphones",
+    "vulnerable": false
+  },
+  {
+    "name": "JLab GO Work 2",
+    "manufacturer": "JLab",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL Everest 110GA",
+    "manufacturer": "JBL",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL Everest 310GA",
+    "manufacturer": "JBL",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL Everest 710GA",
+    "manufacturer": "JBL",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL LIVE400BT",
+    "manufacturer": "Harman",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL LIVE500BT",
+    "manufacturer": "Harman",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL LIVE650BTNC",
+    "manufacturer": "Harman",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-835S",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-835",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-830",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-930",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-1010",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-1500",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-1700",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-1120",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-1125",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS-2000",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "WI-C100",
+    "manufacturer": "Sony",
+    "type": "headphones"
+  },
+  {
+    "name": "Google Pixel Buds",
+    "manufacturer": "Google",
+    "type": "headphones"
+  },
+  {
+    "name": "Jabra Elite 4 Active Gen 2",
+    "manufacturer": "GN Netcom A/S",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "WH-1000XM6",
+    "manufacturer": "Sony",
+    "type": "headphones",
+    "vulnerable": true,
+    "fhn": true
+  },
+  {
+    "name": "ATH-S220BT",
+    "manufacturer": "Audio-Technica",
+    "type": "headphones"
+  },
+  {
+    "name": "Pixel Watch 4",
+    "manufacturer": "Google",
+    "type": "wearable"
+  },
+  {
+    "name": "Pixel Buds Pro 2",
+    "manufacturer": "Google",
+    "type": "wirelessHeadphones",
+    "vulnerable": true,
+    "fhn": true
+  },
+  {
+    "name": "JBL Endurance Pace",
+    "manufacturer": "Harman",
+    "type": "headphones"
+  },
+  {
+    "name": "Poly VFree 20",
+    "manufacturer": "HP, Inc.",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Nirvana Crown",
+    "manufacturer": "Imagine Marketing Private Limited",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "ATH-M20xBT",
+    "manufacturer": "Audio-Technica",
+    "type": "headphones",
+    "vulnerable": false
+  },
+  {
+    "name": "WONDERBOOM 3",
+    "manufacturer": "Logitech",
+    "type": "speaker"
+  },
+  {
+    "name": "xboom Buds Lite",
+    "manufacturer": "LG Electronics",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "MONITOR III A.N.C.",
+    "manufacturer": "Zound Industries International AB",
+    "type": "headphones"
+  },
+  {
+    "name": "JBL Live Flex 3",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "HPrime Tag",
+    "manufacturer": "Shenzhen Lunci Technology Co., Ltd",
+    "type": "tag"
+  },
+  {
+    "name": "HyperX Cloud MIX Buds 2",
+    "manufacturer": "HP Inc.",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "JBL Vibe Buds 2",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "JBL VIBE BEAM",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "xboom Stage301",
+    "manufacturer": "LG Electronics",
+    "type": "speaker"
+  },
+  {
+    "name": "JBL RACE TWS",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Px8",
+    "manufacturer": "Bowers & Wilkins",
+    "type": "headphones"
+  },
+  {
+    "name": "GLIDiC TW-5300",
+    "manufacturer": "SB C&S Corp.",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "JBL Live Beam 3",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "SRS-XB23",
+    "manufacturer": "Sony",
+    "type": "speaker"
+  },
+  {
+    "name": "Jabra Evolve2 55",
+    "manufacturer": "Jabra",
+    "type": "headphones"
+  },
+  {
+    "name": "Jabra Elite 3",
+    "manufacturer": "Jabra",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Bose Ultra Open Earbuds",
+    "manufacturer": "Bose Corporation",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Sesh ANC Active",
+    "manufacturer": "Skullcandy, Inc.",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "JBL TUNE770NC",
+    "manufacturer": "Harman",
+    "type": "headphones"
+  },
+  {
+    "name": "LG HBS1110",
+    "manufacturer": "LG",
+    "type": "headphones"
+  },
+  {
+    "name": "HK FLY TWS",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "JBL PartyBox Club 120",
+    "manufacturer": "Harman",
+    "type": "speaker"
+  },
+  {
+    "name": "SRS-XB100",
+    "manufacturer": "Sony",
+    "type": "speaker"
+  },
+  {
+    "name": "MOTIV GO 2",
+    "manufacturer": "Lautsprecher Teufel GmbH",
+    "type": "speaker"
+  },
+  {
+    "name": "REAL BLUE TWS 3",
+    "manufacturer": "Teufel",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Sony WF-1000XM3",
+    "manufacturer": "Sony",
+    "type": "headphones"
+  },
+  {
+    "name": "ULT FIELD 5",
+    "manufacturer": "Sony",
+    "type": "speaker"
+  },
+  {
+    "name": "Ear (stick)",
+    "manufacturer": "NOTHING TECHNOLOGY LIMITED",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Oladance Wearable Stereo",
+    "manufacturer": "Oladance",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "JBL PartyBox 720",
+    "manufacturer": "Harman",
+    "type": "speaker"
+  },
+  {
+    "name": "JBL TUNE FLEX",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "soundcore Space One",
+    "manufacturer": "Anker",
+    "type": "headphones"
+  },
+  {
+    "name": "Philips TAT3519",
+    "manufacturer": "TPV Technology Limited",
+    "type": "wirelessHeadphones"
+  },
+  {
+    "name": "Noise Tag 1",
+    "manufacturer": "Beijing Zizai Technology Co., LTD.",
+    "type": "tag"
+  },
+  {
+    "name": "SATECHI FindAll Card",
+    "manufacturer": "Shenzhen Lunci Technology Co., Ltd",
+    "type": "tag"
+  },
+  {
+    "name": "soundcore Motion 300",
+    "manufacturer": "Anker",
+    "type": "speaker"
+  },
+  {
+    "name": "OnePlus Nord Buds 3 Pro",
+    "manufacturer": "OnePlus Electronics (Shenzhen) Co., Ltd.",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  },
+  {
+    "name": "WH-1000XM5",
+    "manufacturer": "Sony",
+    "type": "headphones",
+    "vulnerable": true,
+    "fhn": true
+  },
+  {
+    "name": "WH-CH720N",
+    "manufacturer": "Sony",
+    "type": "headphones",
+    "vulnerable": true
+  },
+  {
+    "name": "WF-1000XM5",
+    "manufacturer": "Sony",
+    "type": "wirelessHeadphones",
+    "vulnerable": true,
+    "fhn": true
+  },
+  {
+    "name": "WH-1000XM4",
+    "manufacturer": "Sony",
+    "type": "headphones",
+    "vulnerable": true
+  },
+  {
+    "name": "Nothing Ear (a)",
+    "manufacturer": "NOTHING TECHNOLOGY LIMITED",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  },
+  {
+    "name": "JBL TUNE BEAM",
+    "manufacturer": "Harman",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  },
+  {
+    "name": "soundcore Liberty 4 NC",
+    "manufacturer": "Anker",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  },
+  {
+    "name": "Redmi Buds 5 Pro",
+    "manufacturer": "Xiaomi Inc.",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  },
+  {
+    "name": "Jabra Elite 8 Active",
+    "manufacturer": "Jabra",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  },
+  {
+    "name": "MOTIF II A.N.C.",
+    "manufacturer": "Marshall",
+    "type": "wirelessHeadphones",
+    "vulnerable": true
+  }
+]
