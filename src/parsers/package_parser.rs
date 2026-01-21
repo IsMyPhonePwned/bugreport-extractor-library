@@ -359,6 +359,226 @@ impl PackageParser {
         None
     }
 
+    /// Parse CHECKIN PACKAGE section which contains package information in CSV format
+    /// Format:
+    /// ------ CHECKIN PACKAGE
+    /// pkg,com.samsung.SMT.lang_hi_in_f00,10229,322605000,1762729194345,com.sec.android.app.samsungapps10089?,0
+    /// pkg,com.samsung.android.wifi.resources.qc,10261,1,1704110503560,?-1?,0
+    fn parse_checkin_package_section(content: &str, packages_map: &mut std::collections::HashMap<String, Value>) {
+        const CHECKIN_START: &str = "------ CHECKIN PACKAGE";
+        
+        if let Some(checkin_start) = content.find(CHECKIN_START) {
+            let checkin_section = &content[checkin_start..];
+            let lines: Vec<&str> = checkin_section.lines().collect();
+            
+            // Skip the header line and parse data lines
+            for line in lines.iter().skip(1) {
+                let trimmed = line.trim();
+                if trimmed.is_empty() {
+                    continue;
+                }
+                
+                // Stop at next section (starts with ------)
+                if trimmed.starts_with("------") && !trimmed.contains("CHECKIN PACKAGE") {
+                    break;
+                }
+                
+                // Parse lines starting with "pkg,"
+                if trimmed.starts_with("pkg,") {
+                    let parts: Vec<&str> = trimmed.split(',').collect();
+                    
+                    // Format: pkg,<package_name>,<uid>,<version_code>,<timestamp>,<referrer>?,<unknown>
+                    if parts.len() >= 6 {
+                        let package_name = parts[1].trim();
+                        let uid = parts[2].trim().parse::<u32>().ok();
+                        let referrer = parts[5].trim();
+                        
+                        // Clean referrer: remove trailing '?' and handle '-1' case
+                        // Format can be: "com.sec.android.app.samsungapps10089?" or "?-1?" or "-1"
+                        let referrer_clean = if referrer == "?-1?" || referrer == "-1" || referrer.starts_with("?-1") {
+                            None
+                        } else if referrer.ends_with('?') {
+                            // Remove trailing '?' from referrer
+                            let cleaned = referrer.trim_end_matches('?');
+                            if cleaned.is_empty() || cleaned == "-1" {
+                                None
+                            } else {
+                                Some(cleaned.to_string())
+                            }
+                        } else if !referrer.is_empty() && referrer != "-1" {
+                            Some(referrer.to_string())
+                        } else {
+                            None
+                        };
+                        
+                        // Create or update package entry
+                        if !package_name.is_empty() {
+                            let entry = packages_map.entry(package_name.to_string()).or_insert_with(|| {
+                                let mut map = Map::new();
+                                map.insert("package_name".to_string(), json!(package_name));
+                                json!(map)
+                            });
+                            
+                            if let Some(pkg_obj) = entry.as_object_mut() {
+                                // Set UID if not already present
+                                if let Some(uid_val) = uid {
+                                    if !pkg_obj.contains_key("appId") {
+                                        pkg_obj.insert("appId".to_string(), json!(uid_val));
+                                    }
+                                    if !pkg_obj.contains_key("uid") {
+                                        pkg_obj.insert("uid".to_string(), json!(uid_val));
+                                    }
+                                }
+                                
+                                // Set referrer if available and not already present
+                                if let Some(ref referrer_val) = referrer_clean {
+                                    if !referrer_val.is_empty() && !pkg_obj.contains_key("referrer") {
+                                        pkg_obj.insert("referrer".to_string(), json!(referrer_val));
+                                    }
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    /// Parse [MARS] section which contains package information in table format
+    /// Format:
+    /// [MARS]
+    /// ID   PkgName                                 Uid   Mode  New Reason ...
+    /// 1    com.google.android.youtube              10270 1     1   added_from_mars_auto ...
+    fn parse_mars_section(content: &str, packages_map: &mut std::collections::HashMap<String, Value>) {
+        const MARS_START: &str = "[MARS]";
+        
+        if let Some(mars_start) = content.find(MARS_START) {
+            let mars_section = &content[mars_start..];
+            let lines: Vec<&str> = mars_section.lines().collect();
+            
+            if lines.len() < 2 {
+                return; // Need at least header and one data line
+            }
+            
+            // Use fixed-width parsing which is more robust for this table format
+            Self::parse_mars_section_fixed_width(&lines[2..], packages_map);
+        }
+    }
+    
+    /// Parse MARS section using a more robust approach that handles:
+    /// 1. Fixed-width columns (some package names are long)
+    /// 2. Malformed rows where UID is concatenated with package name
+    /// 3. Variable spacing between columns
+    fn parse_mars_section_fixed_width(lines: &[&str], packages_map: &mut std::collections::HashMap<String, Value>) {
+        for line in lines {
+            let trimmed = line.trim();
+            if trimmed.is_empty() {
+                continue;
+            }
+            
+            // Stop at next section
+            if trimmed.starts_with('[') && !trimmed.starts_with("[MARS]") {
+                break;
+            }
+            if trimmed.starts_with("---") {
+                break;
+            }
+            
+            // Split by whitespace, but be careful with long package names
+            let parts: Vec<&str> = trimmed.split_whitespace().collect();
+            
+            if parts.len() < 2 {
+                continue;
+            }
+            
+            // First part should be ID (numeric)
+            if parts[0].parse::<u32>().is_err() {
+                continue;
+            }
+            
+            // Find package name - it's the first part that contains '.'
+            // But some rows have UID concatenated: "com.package.name10102541"
+            let mut package_name = None;
+            let mut uid = None;
+            
+            // Look for package name starting from index 1
+            for (idx, part) in parts.iter().enumerate().skip(1) {
+                // Check if this part contains a dot (likely a package name)
+                if part.contains('.') {
+                    // Check if package name has UID concatenated at the end
+                    // Pattern: "com.package.name10102541" or "com.package.name1010254"
+                    let mut pkg_name = part.to_string();
+                    
+                    // Try to extract UID from the end of the package name
+                    // UIDs are typically 5-6 digits starting with 10xxx
+                    if let Some(last_digit_pos) = pkg_name.rfind(char::is_numeric) {
+                        // Check if there's a sequence of digits at the end that could be a UID
+                        let mut uid_start = last_digit_pos;
+                        while uid_start > 0 && pkg_name.chars().nth(uid_start - 1).map_or(false, |c| c.is_ascii_digit()) {
+                            uid_start -= 1;
+                        }
+                        
+                        if uid_start < pkg_name.len() {
+                            let potential_uid_str = &pkg_name[uid_start..];
+                            if let Ok(uid_val) = potential_uid_str.parse::<u32>() {
+                                // UID should be 5-6 digits, typically 10xxx-10xxxx
+                                if uid_val >= 10000 && uid_val < 200000 {
+                                    uid = Some(uid_val);
+                                    // Remove UID from package name
+                                    pkg_name = pkg_name[..uid_start].trim().to_string();
+                                }
+                            }
+                        }
+                    }
+                    
+                    package_name = Some(pkg_name);
+                    break;
+                }
+            }
+            
+            // If we didn't find UID in the package name, look for it in subsequent fields
+            if uid.is_none() {
+                // Find the package name index first
+                let pkg_idx = parts.iter().position(|p| p.contains('.'));
+                if let Some(pkg_pos) = pkg_idx {
+                    // Look for UID in fields after package name
+                    for part in parts.iter().skip(pkg_pos + 1).take(5) {
+                        if let Ok(uid_val) = part.parse::<u32>() {
+                            // UID should be 5-6 digits, typically 10xxx-10xxxx
+                            if uid_val >= 10000 && uid_val < 200000 {
+                                uid = Some(uid_val);
+                                break;
+                            }
+                        }
+                    }
+                }
+            }
+            
+            // Create or update package entry
+            if let Some(pkg_name) = package_name {
+                let entry = packages_map.entry(pkg_name.clone()).or_insert_with(|| {
+                    let mut map = Map::new();
+                    map.insert("package_name".to_string(), json!(pkg_name));
+                    json!(map)
+                });
+                
+                if let Some(pkg_obj) = entry.as_object_mut() {
+                    // Only extract package name and UID from MARS section
+                    // If UID is available and appId is not set, use it
+                    if let Some(uid_val) = uid {
+                        if !pkg_obj.contains_key("appId") {
+                            pkg_obj.insert("appId".to_string(), json!(uid_val));
+                        }
+                        // Also store as uid if not already present
+                        if !pkg_obj.contains_key("uid") {
+                            pkg_obj.insert("uid".to_string(), json!(uid_val));
+                        }
+                    }
+                }
+            }
+        }
+    }
+
     /// Tries to parse a log entry, which may span multiple lines.
     /// It takes the current line and a peekable iterator for subsequent lines.
     /// Also takes a boundary checker function to stop at section boundaries.
@@ -505,6 +725,12 @@ impl Parser for PackageParser {
         
         // Parse Packages section only within DUMP OF SERVICE package blocks
         let mut packages_map: std::collections::HashMap<String, Value> = std::collections::HashMap::new();
+        
+        // Parse [MARS] section if present
+        Self::parse_mars_section(&content, &mut packages_map);
+        
+        // Parse CHECKIN PACKAGE section if present
+        Self::parse_checkin_package_section(&content, &mut packages_map);
 
         for block in content.split(START_DELIMITER).skip(1) {
             // Find where this block ends (section end or delimiter)
