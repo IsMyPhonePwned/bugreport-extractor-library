@@ -23,6 +23,7 @@ use bugreport_extractor_library::file_loader;
 
 use bugreport_extractor_library::parsers::battery_parser::AppBatteryStats;
 use bugreport_extractor_library::detection::detector::ExploitationDetector;
+use bugreport_extractor_library::detection::whisperpair::WhisperPairDetector;
 
 /// A command-line tool to parse large data files into JSON using multiple parsers concurrently.
 #[derive(Parser, Debug)]
@@ -378,6 +379,90 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         if args.output_format == "json" {
             println!("\n=== JSON Output ===");
             println!("{}", serde_json::to_string_pretty(&unified_result)?);
+        }
+    }
+
+    // === WhisperPair Detection ===
+    // Always run WhisperPair detection if Bluetooth parser was used
+    if args.parser_type.contains(&ParserType::Bluetooth) {
+        if !show_progress {
+            println!("\n=== WhisperPair Vulnerability Detection ===\n");
+        }
+        
+        // Find Bluetooth parser result
+        let mut bluetooth_json: Option<serde_json::Value> = None;
+        for (parser_type, result, _) in &results {
+            if *parser_type == ParserType::Bluetooth {
+                match result {
+                    Ok(json_output) => {
+                        bluetooth_json = Some(json_output.clone());
+                        break;
+                    }
+                    Err(e) => {
+                        eprintln!("Error: Bluetooth parser failed: {}", e);
+                    }
+                }
+            }
+        }
+        
+        if let Some(bluetooth_data) = bluetooth_json {
+            let whisperpair_detector = WhisperPairDetector::new();
+            
+            match whisperpair_detector.detect_from_json(&bluetooth_data) {
+                Ok(detection_result) => {
+                    if detection_result.has_vulnerable_devices {
+                        println!("⚠️  WhisperPair Vulnerable Devices Detected!");
+                        println!("Total vulnerable devices found: {}\n", detection_result.total_detected);
+                        
+                        for detected in &detection_result.detected_devices {
+                            println!("  Device: {}", detected.device_name);
+                            if let Some(ref mfr) = detected.device_manufacturer {
+                                println!("    Manufacturer ID: {}", mfr);
+                            }
+                            println!("    Vulnerable Device: {} ({})", 
+                                detected.vulnerable_device.name, 
+                                detected.vulnerable_device.manufacturer);
+                            if let Some(ref mac) = detected.mac_address {
+                                println!("    MAC Address: {}", mac);
+                            }
+                            if let Some(ref masked) = detected.masked_address {
+                                println!("    Masked Address: {}", masked);
+                            }
+                            println!("    Connected: {}", if detected.connected { "Yes" } else { "No" });
+                            println!("    Severity: {}", detected.severity);
+                            if detected.vulnerable_device.fhn.unwrap_or(false) {
+                                println!("    ⚠️  FHN (Full Handshake Negotiation) vulnerability");
+                            }
+                            if let Some(ref dev_type) = detected.vulnerable_device.r#type {
+                                println!("    Type: {}", dev_type);
+                            }
+                            println!();
+                        }
+                        
+                        println!("📋 Recommendations:");
+                        println!("  • Update firmware on vulnerable Bluetooth devices if available");
+                        println!("  • Consider disconnecting vulnerable devices until patches are available");
+                        println!("  • Monitor for security advisories from device manufacturers");
+                        println!("  • Reference: https://whisperpair.eu/\n");
+                    } else {
+                        println!("✓ No WhisperPair vulnerable devices detected");
+                        println!("  All Bluetooth devices appear to be safe.\n");
+                    }
+                    
+                    // JSON output option
+                    if args.output_format == "json" {
+                        println!("\n=== WhisperPair JSON Output ===");
+                        println!("{}", serde_json::to_string_pretty(&detection_result)?);
+                    }
+                }
+                Err(e) => {
+                    eprintln!("Error running WhisperPair detection: {}", e);
+                }
+            }
+        } else {
+            if !show_progress {
+                println!("⚠️  Bluetooth parser was selected but no data was found");
+            }
         }
     }
 

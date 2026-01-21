@@ -2,22 +2,25 @@ use super::Parser;
 use serde_json::{json, Map, Value};
 use std::error::Error;
 use std::collections::HashMap;
+use serde::{Deserialize, Serialize};
 
-#[derive(Debug, Clone)]
-struct BluetoothDevice {
-    mac_address: Option<String>,  // Complete MAC address if available
-    masked_address: String,       // Masked address (XX:XX:XX:XX:XX:XX)
-    identity_address: Option<String>, // Identity address if different
-    name: Option<String>,
-    transport_type: Option<String>, // LE, DUAL, BR/EDR
-    device_class: Option<String>,   // Hex value like 0x000918
-    services: Vec<String>,         // List of services/UUIDs
-    connected: bool,
+/// Represents a Bluetooth device parsed from the bug report
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct BluetoothDevice {
+    pub mac_address: Option<String>,  // Complete MAC address if available
+    pub masked_address: String,       // Masked address (XX:XX:XX:XX:XX:XX)
+    pub identity_address: Option<String>, // Identity address if different
+    pub name: Option<String>,
+    pub transport_type: Option<String>, // LE, DUAL, BR/EDR
+    pub device_class: Option<String>,   // Hex value like 0x000918
+    pub services: Vec<String>,         // List of services/UUIDs
+    pub connected: bool,
     // Additional details from detailed sections
-    manufacturer: Option<u32>,
-    device_type: Option<u32>,
-    link_type: Option<u32>,
+    pub manufacturer: Option<u32>,
+    pub device_type: Option<u32>,
+    pub link_type: Option<u32>,
 }
+
 
 /// A parser for Bluetooth-related sections in Android bug reports.
 /// Parses bonded devices and connected equipment.
@@ -32,6 +35,23 @@ impl Default for BluetoothParser {
 impl BluetoothParser {
     pub fn new() -> Result<Self, Box<dyn Error + Send + Sync>> {
         Ok(BluetoothParser)
+    }
+
+    /// Extract Bluetooth devices from the parser's JSON output
+    /// This is a helper function to convert the JSON Value to typed BluetoothDevice structs
+    pub fn extract_devices_from_json(json_value: &Value) -> Result<Vec<BluetoothDevice>, Box<dyn Error + Send + Sync>> {
+        let devices_array = json_value
+            .get("devices")
+            .and_then(|v| v.as_array())
+            .ok_or("No 'devices' array found in Bluetooth JSON")?;
+        
+        let mut devices = Vec::new();
+        for device_value in devices_array {
+            let device: BluetoothDevice = serde_json::from_value(device_value.clone())?;
+            devices.push(device);
+        }
+        
+        Ok(devices)
     }
 
     // Parse a MAC address from various formats
@@ -376,39 +396,9 @@ impl Parser for BluetoothParser {
         
         // Convert to JSON
         if !devices.is_empty() {
-            let devices_json: Vec<Value> = devices.into_iter().map(|d| {
-                let mut obj = Map::new();
-                obj.insert("masked_address".to_string(), json!(d.masked_address));
-                if let Some(mac) = d.mac_address {
-                    obj.insert("mac_address".to_string(), json!(mac));
-                }
-                if let Some(identity) = d.identity_address {
-                    obj.insert("identity_address".to_string(), json!(identity));
-                }
-                if let Some(name) = d.name {
-                    obj.insert("name".to_string(), json!(name));
-                }
-                if let Some(transport) = d.transport_type {
-                    obj.insert("transport_type".to_string(), json!(transport));
-                }
-                if let Some(class) = d.device_class {
-                    obj.insert("device_class".to_string(), json!(class));
-                }
-                if !d.services.is_empty() {
-                    obj.insert("services".to_string(), json!(d.services));
-                }
-                obj.insert("connected".to_string(), json!(d.connected));
-                if let Some(manufacturer) = d.manufacturer {
-                    obj.insert("manufacturer".to_string(), json!(manufacturer));
-                }
-                if let Some(dev_type) = d.device_type {
-                    obj.insert("device_type".to_string(), json!(dev_type));
-                }
-                if let Some(link_type) = d.link_type {
-                    obj.insert("link_type".to_string(), json!(link_type));
-                }
-                json!(obj)
-            }).collect();
+            let devices_json: Vec<Value> = devices.iter()
+                .map(|d| serde_json::to_value(d).unwrap_or_else(|_| json!({})))
+                .collect();
             result.insert("devices".to_string(), json!(devices_json));
         }
         
