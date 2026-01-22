@@ -13,6 +13,14 @@ pub struct AuthenticationEvent {
     pub success: bool,
     pub auth_type: Option<String>,  // biometric, passcode, password, pattern, etc.
     pub raw_message: String,  // Original log message for reference
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub event_source: Option<String>,  // "keystore2" or "PowerManagerService"
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub wake_reason: Option<String>,  // For PowerManagerService events: power_button, biometric, etc.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub uid: Option<u32>,  // Process UID
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pid: Option<u32>,  // Process PID
 }
 
 /// A parser for user authentication events in Android bug reports.
@@ -192,6 +200,96 @@ impl AuthenticationParser {
             success,
             auth_type,
             raw_message: clean_message,
+            event_source: Some("keystore2".to_string()),
+            wake_reason: None,
+            uid: None,
+            pid: None,
+        })
+    }
+
+    /// Parse a PowerManagerService wakeUp event
+    /// Format: "!@Screen__On  - 503 :  wakeUp:  (uid: 10059 pid: 2059) (biometric) (0ms) groupId=0"
+    fn parse_power_manager_wakeup(line: &str) -> Option<AuthenticationEvent> {
+        // Parse timestamp
+        let (timestamp, remaining) = Self::parse_logcat_timestamp(line)?;
+        
+        // Check if this is a PowerManagerService wakeUp event
+        if !remaining.contains("PowerManagerService") || !remaining.contains("wakeUp:") {
+            return None;
+        }
+        
+        // Extract wake reason - look for pattern like "(biometric)" or "(power_button)"
+        // The wake reason is in parentheses after the uid/pid info
+        let wake_reason = if let Some(wakeup_pos) = remaining.find("wakeUp:") {
+            let after_wakeup = &remaining[wakeup_pos + 7..];
+            // Find the first parenthesized item after wakeUp: that's not (uid: ... pid: ...)
+            // Pattern: wakeUp:  (uid: X pid: Y) (reason) (duration)
+            if let Some(reason_start) = after_wakeup.find(") (") {
+                let after_first_paren = &after_wakeup[reason_start + 3..];
+                if let Some(reason_end) = after_first_paren.find(')') {
+                    Some(after_first_paren[..reason_end].to_string())
+                } else {
+                    None
+                }
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Extract UID and PID
+        let uid = if let Some(uid_pos) = remaining.find("(uid: ") {
+            let after_uid = &remaining[uid_pos + 6..];
+            if let Some(uid_end) = after_uid.find(' ') {
+                after_uid[..uid_end].parse::<u32>().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        let pid = if let Some(pid_pos) = remaining.find("pid: ") {
+            let after_pid = &remaining[pid_pos + 5..];
+            if let Some(pid_end) = after_pid.find(')') {
+                after_pid[..pid_end].trim().parse::<u32>().ok()
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+        
+        // Determine auth_type from wake_reason
+        let auth_type = wake_reason.as_ref().and_then(|reason| {
+            let lower = reason.to_lowercase();
+            if lower.contains("biometric") || lower.contains("fingerprint") || lower.contains("face") {
+                Some("biometric".to_string())
+            } else if lower.contains("power") {
+                Some("power_button".to_string())
+            } else {
+                Some(reason.clone())
+            }
+        });
+        
+        // Extract the full message for reference
+        let content = if let Some(tag_pos) = remaining.find(": ") {
+            &remaining[tag_pos + 2..]
+        } else {
+            remaining
+        };
+        
+        Some(AuthenticationEvent {
+            timestamp,
+            user_id: None,  // PowerManagerService doesn't have user_id
+            success: true,  // wakeUp events are always successful
+            auth_type,
+            raw_message: content.trim().to_string(),
+            event_source: Some("PowerManagerService".to_string()),
+            wake_reason,
+            uid,
+            pid,
         })
     }
 }
@@ -233,23 +331,43 @@ impl Parser for AuthenticationParser {
                 // Use byte-level search for better performance
                 let section_content = &content[section_start..end_index];
                 
-                // Fast pre-filter: only process lines that contain "Successfully unlocked user"
+                // Fast pre-filter: only process lines that contain our patterns
                 // This avoids expensive parsing for most lines (most lines won't match)
-                const SEARCH_PATTERN: &[u8] = b"Successfully unlocked user";
+                const KEYSTORE_PATTERN: &[u8] = b"Successfully unlocked user";
+                const POWER_MANAGER_PATTERN: &[u8] = b"PowerManagerService";
+                const WAKEUP_PATTERN: &[u8] = b"wakeUp:";
                 
                 for line in section_content.lines() {
-                    // Quick byte-level check before any string operations
-                    // This is much faster than converting to lowercase and using contains()
                     let line_bytes = line.as_bytes();
-                    if !line_bytes.windows(SEARCH_PATTERN.len()).any(|window| {
-                        window.eq_ignore_ascii_case(SEARCH_PATTERN)
-                    }) {
+                    
+                    // Check for keystore2 authentication events
+                    let is_keystore = line_bytes.windows(KEYSTORE_PATTERN.len()).any(|window| {
+                        window.eq_ignore_ascii_case(KEYSTORE_PATTERN)
+                    });
+                    
+                    // Check for PowerManagerService wakeUp events
+                    let is_power_manager = line_bytes.windows(POWER_MANAGER_PATTERN.len()).any(|window| {
+                        window.eq_ignore_ascii_case(POWER_MANAGER_PATTERN)
+                    }) && line_bytes.windows(WAKEUP_PATTERN.len()).any(|window| {
+                        window.eq_ignore_ascii_case(WAKEUP_PATTERN)
+                    });
+                    
+                    if !is_keystore && !is_power_manager {
                         continue; // Skip this line early - avoids all parsing overhead
                     }
                     
-                    // Only parse if the line contains our pattern
-                    if let Some(event) = Self::parse_auth_line(line) {
-                        events.push(event);
+                    // Parse keystore2 events
+                    if is_keystore {
+                        if let Some(event) = Self::parse_auth_line(line) {
+                            events.push(event);
+                        }
+                    }
+                    
+                    // Parse PowerManagerService wakeUp events
+                    if is_power_manager {
+                        if let Some(event) = Self::parse_power_manager_wakeup(line) {
+                            events.push(event);
+                        }
                     }
                 }
             }
