@@ -12,7 +12,7 @@ use sigma_zero::engine::SigmaEngine;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    AdbParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
+    AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
 };
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
@@ -195,6 +195,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Adb => {
                 let adb_parser = AdbParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(adb_parser)));
+            },
+            ParserType::Authentication => {
+                let auth_parser = AuthenticationParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(auth_parser)));
             },
         }
     }
@@ -618,6 +622,10 @@ fn run_comparison_mode(
                 let parser = AdbParser::new().expect("Failed to create AdbParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::Authentication => {
+                let parser = AuthenticationParser::new().expect("Failed to create AuthenticationParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
         }
     }
     
@@ -685,6 +693,10 @@ fn run_comparison_mode(
             }
             ParserType::Adb => {
                 let parser = AdbParser::new().expect("Failed to create AdbParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Authentication => {
+                let parser = AuthenticationParser::new().expect("Failed to create AuthenticationParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
             },
         }

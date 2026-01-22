@@ -178,6 +178,7 @@ fn format_parser_name(parser_type: &ParserType) -> &str {
         ParserType::Bluetooth => "Bluetooth",
         ParserType::DevicePolicy => "Device Policy",
         ParserType::Adb => "ADB",
+        ParserType::Authentication => "Authentication",
     }
 }
 
@@ -279,6 +280,26 @@ fn format_item(parser_type: &ParserType, item: &Value) -> String {
                 format!("Key: {}", identifier)
             } else {
                 format!("{:?}", item)
+            }
+        }
+        ParserType::Authentication => {
+            // Format authentication events
+            let timestamp = item.get("timestamp").and_then(|t| t.as_str()).unwrap_or("unknown");
+            let user_id = item.get("user_id").and_then(|u| u.as_u64());
+            let success = item.get("success").and_then(|s| s.as_bool()).unwrap_or(false);
+            let auth_type = item.get("auth_type").and_then(|a| a.as_str());
+            
+            let status = if success { "Success" } else { "Failed" };
+            let user_str = if let Some(uid) = user_id {
+                format!("user {}", uid)
+            } else {
+                "unknown user".to_string()
+            };
+            
+            if let Some(auth) = auth_type {
+                format!("{} {} {} ({})", timestamp, status, user_str, auth)
+            } else {
+                format!("{} {} {}", timestamp, status, user_str)
             }
         }
         _ => {
