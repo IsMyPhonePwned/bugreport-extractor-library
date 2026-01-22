@@ -12,7 +12,7 @@ use sigma_zero::engine::SigmaEngine;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    BatteryParser, BluetoothParser, CrashParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
+    AdbParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
 };
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
@@ -187,6 +187,14 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Bluetooth => {
                 let bluetooth_parser = BluetoothParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(bluetooth_parser)));
+            },
+            ParserType::DevicePolicy => {
+                let device_policy_parser = DevicePolicyParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(device_policy_parser)));
+            }
+            ParserType::Adb => {
+                let adb_parser = AdbParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(adb_parser)));
             },
         }
     }
@@ -602,6 +610,14 @@ fn run_comparison_mode(
                 let parser = BluetoothParser::new().expect("Failed to create BluetoothParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::DevicePolicy => {
+                let parser = DevicePolicyParser::new().expect("Failed to create DevicePolicyParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            }
+            ParserType::Adb => {
+                let parser = AdbParser::new().expect("Failed to create AdbParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
         }
     }
     
@@ -661,6 +677,14 @@ fn run_comparison_mode(
             },
             ParserType::Bluetooth => {
                 let parser = BluetoothParser::new().expect("Failed to create BluetoothParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::DevicePolicy => {
+                let parser = DevicePolicyParser::new().expect("Failed to create DevicePolicyParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            }
+            ParserType::Adb => {
+                let parser = AdbParser::new().expect("Failed to create AdbParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
             },
         }
