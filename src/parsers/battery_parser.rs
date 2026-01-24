@@ -5,6 +5,7 @@ use std::error::Error;
 use serde::{Deserialize, Serialize};
 use std::collections::HashMap;
 use regex::Regex;
+use std::sync::OnceLock;
 
 const BATTERYSTATS_START_MARKER: &str = "CHECKIN BATTERYSTATS";
 const BATTERYSTATS_END_MARKER: &str = "was the duration of 'CHECKIN BATTERYSTATS'";
@@ -192,40 +193,69 @@ impl BatteryParser {
     
     /// Get compiled regex for extracting key=value pairs from battery history lines
     /// Pattern matches: key=value where value can be unquoted or quoted
-    fn get_kv_regex() -> Regex {
-        // Matches: key=value or key="quoted value"
-        // Value can be:
-        //   - Unquoted: any characters except space until next space or end of line
-        //   - Quoted: "..." (can contain spaces and special chars)
-        // Examples: status=discharging, temp=234, state=1000:"sensor:0x73677276"
-        // Pattern: (\w+)= captures the key, then either [^\s]+ (unquoted) or "[^"]*" (quoted)
-        Regex::new(r#"(\w+)=([^\s"]+|"[^"]*")"#).unwrap()
+    /// Cached to avoid recompilation on every call
+    fn get_kv_regex() -> &'static Regex {
+        static KV_REGEX: OnceLock<Regex> = OnceLock::new();
+        KV_REGEX.get_or_init(|| {
+            // Matches: key=value or key="quoted value"
+            // Value can be:
+            //   - Unquoted: any characters except space until next space or end of line
+            //   - Quoted: "..." (can contain spaces and special chars)
+            // Examples: status=discharging, temp=234, state=1000:"sensor:0x73677276"
+            // Pattern: (\w+)= captures the key, then either [^\s]+ (unquoted) or "[^"]*" (quoted)
+            Regex::new(r#"(\w+)=([^\s"]+|"[^"]*")"#).unwrap()
+        })
+    }
+    
+    /// Get compiled regex for extracting timestamp from battery history lines
+    fn get_timestamp_regex() -> &'static Regex {
+        static TIMESTAMP_REGEX: OnceLock<Regex> = OnceLock::new();
+        TIMESTAMP_REGEX.get_or_init(|| {
+            Regex::new(r"^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})").unwrap()
+        })
+    }
+    
+    /// Get compiled regex for extracting flags from battery history lines
+    fn get_flags_regex() -> &'static Regex {
+        static FLAGS_REGEX: OnceLock<Regex> = OnceLock::new();
+        FLAGS_REGEX.get_or_init(|| {
+            Regex::new(r"([+-][a-zA-Z_][a-zA-Z0-9_]*)").unwrap()
+        })
     }
     /// Parse batterystats section from the bugreport
     /// Returns apps and version info
     fn parse_battery_section(content: &str) -> (Vec<AppBatteryStats>, Option<VersionInfo>) {
         let mut apps: HashMap<u32, AppBatteryStats> = HashMap::new();
         let mut version_info = None;
+        
+        // Pre-filter: only process lines starting with "9,"
+        // Use byte-level check for faster filtering
+        const PREFIX: &[u8] = b"9,";
+        const HSP_PREFIX: &[u8] = b"9,hsp,";
 
         for line in content.lines() {
-            if line.starts_with("9,") {
-                // Skip HSP records (they don't bring value)
-                if line.starts_with("9,hsp,") {
-                    continue;
-                }
-                
-                // Check for version info (format: 9,<uid>,i,vers,...)
-                let parts: Vec<&str> = line.split(',').collect();
-                if parts.len() >= 4 && parts[2] == "i" && parts[3] == "vers" {
-                    if let Some(version) = Self::parse_version_info(line) {
-                        version_info = Some(version);
-                    }
-                    continue;
-                }
-                
-                // Parse regular app battery stats
-                Self::parse_battery_line(line, &mut apps);
+            // Fast byte-level check before string operations
+            let line_bytes = line.as_bytes();
+            if line_bytes.len() < 2 || !line_bytes.starts_with(PREFIX) {
+                continue;
             }
+            
+            // Skip HSP records (they don't bring value)
+            if line_bytes.starts_with(HSP_PREFIX) {
+                continue;
+            }
+            
+            // Check for version info (format: 9,<uid>,i,vers,...)
+            // Optimize: only split if we see "i,vers" pattern
+            if line_bytes.len() > 10 && line.contains(",i,vers") {
+                if let Some(version) = Self::parse_version_info(line) {
+                    version_info = Some(version);
+                }
+                continue;
+            }
+            
+            // Parse regular app battery stats
+            Self::parse_battery_line(line, &mut apps);
         }
 
         (apps.into_values().collect(), version_info)
@@ -235,36 +265,33 @@ impl BatteryParser {
     /// Format: 9,<uid>,i,vers,<sdk_version>,<build_number_1>,<build_number_2>,<build_number_3>
     /// Example: 9,0,i,vers,36,1048791,BP2A.250605.031.A3,BP2A.250605.031.A3
     fn parse_version_info(line: &str) -> Option<VersionInfo> {
-        let parts: Vec<&str> = line.split(',').collect();
+        // Optimize: use split_once and manual parsing instead of collecting all parts
+        // Find the position after "i,vers,"
+        let vers_pos = line.find(",i,vers,")?;
+        let after_vers = &line[vers_pos + 8..]; // Skip ",i,vers,"
         
-        if parts.len() < 8 {
-            return None;
-        }
+        // Split the remaining part
+        let mut parts = after_vers.split(',');
         
-        // parts[0] = "9"
-        // parts[1] = uid (usually 0)
-        // parts[2] = "i"
-        // parts[3] = "vers"
-        // parts[4] = sdk_version
-        // parts[5] = build_number_1
-        // parts[6] = build_number_2
-        // parts[7] = build_number_3
-        
-        let sdk_version = parts[4].parse::<u32>().ok()?;
+        let sdk_version = parts.next()?.parse::<u32>().ok()?;
+        let build_number_1 = parts.next()?.to_string();
+        let build_number_2 = parts.next()?.to_string();
+        let build_number_3 = parts.next()?.to_string();
         
         Some(VersionInfo {
             sdk_version,
-            build_number_1: parts[5].to_string(),
-            build_number_2: parts[6].to_string(),
-            build_number_3: parts[7].to_string(),
+            build_number_1,
+            build_number_2,
+            build_number_3,
         })
     }
 
     /// Parse individual battery stats line
     fn parse_battery_line(line: &str, apps: &mut HashMap<u32, AppBatteryStats>) {
+        // Optimize: split once and reuse the parts
         let parts: Vec<&str> = line.split(',').collect();
         
-        if parts.len() < 3 {
+        if parts.len() < 4 {
             return;
         }
 
@@ -296,10 +323,6 @@ impl BatteryParser {
             total_job_count: 0,
             total_job_time_ms: 0,
         });
-
-        if parts.len() < 4 {
-            return;
-        }
 
         // Parse based on record type
         match parts[3] {
@@ -635,45 +658,47 @@ impl BatteryParser {
     /// Parse a single battery history line
     /// Format: "  MM-DD HH:MM:SS.mmm <numbers> <hex> status=... key=value ..."
     fn parse_battery_history_line(line: &str) -> Option<BatteryHistoryEntry> {
-        let trimmed = line.trim_start();
-        
-        // Early validation: must contain "status=" to be a battery history line
-        if !trimmed.contains("status=") {
+        // Fast byte-level check for "status=" before any string operations
+        if !line.as_bytes().windows(7).any(|w| w == b"status=") {
             return None;
         }
         
-        // Extract timestamp using regex: "MM-DD HH:MM:SS.mmm"
-        let timestamp_re = Regex::new(r"^(\d{2}-\d{2}\s+\d{2}:\d{2}:\d{2}\.\d{3})").unwrap();
+        let trimmed = line.trim_start();
+        
+        // Extract timestamp using cached regex: "MM-DD HH:MM:SS.mmm"
+        let timestamp_re = Self::get_timestamp_regex();
         let timestamp = timestamp_re.captures(trimmed)?.get(1)?.as_str().to_string();
         
-        // Extract all key=value pairs using regex
+        // Extract all key=value pairs using cached regex
         let kv_re = Self::get_kv_regex();
-        let mut kv_map: HashMap<String, String> = HashMap::new();
+        let mut kv_map: HashMap<String, String> = HashMap::with_capacity(12); // Pre-allocate for common fields
         
         for cap in kv_re.captures_iter(trimmed) {
-            let key = cap.get(1)?.as_str().to_string();
-            let mut value = cap.get(2)?.as_str().to_string();
-            // Remove quotes if present
-            if value.starts_with('"') && value.ends_with('"') && value.len() > 1 {
-                value = value[1..value.len()-1].to_string();
-            }
-            kv_map.insert(key, value);
+            let key = cap.get(1)?.as_str();
+            let value_match = cap.get(2)?.as_str();
+            
+            // Remove quotes if present (optimize: avoid allocation when possible)
+            let value = if value_match.len() > 1 && value_match.starts_with('"') && value_match.ends_with('"') {
+                &value_match[1..value_match.len()-1]
+            } else {
+                value_match
+            };
+            
+            kv_map.insert(key.to_string(), value.to_string());
         }
         
-        // Helper to extract string value
+        // Helper to extract string value (avoid cloning when possible)
         let get_str = |key: &str| -> Option<String> {
-            kv_map.get(key).cloned()
+            kv_map.get(key).map(|s| s.clone())
         };
         
-        // Helper to extract integer value
+        // Helper to extract integer value (parse directly from map)
         let get_int = |key: &str| -> Option<i32> {
             kv_map.get(key).and_then(|v| v.parse::<i32>().ok())
         };
         
-        // Extract flags (parts starting with + or - followed by word characters, not numbers)
-        // Valid flags: +plugged, -plugged, +charging, etc.
-        // Invalid: -23, +123 (these are just numbers)
-        let flags_re = Regex::new(r"([+-][a-zA-Z_][a-zA-Z0-9_]*)").unwrap();
+        // Extract flags using cached regex
+        let flags_re = Self::get_flags_regex();
         let flags: Vec<String> = flags_re
             .find_iter(trimmed)
             .map(|m| m.as_str().to_string())
@@ -697,8 +722,10 @@ impl BatteryParser {
         //    - Trim whitespace and trailing punctuation (commas, periods, etc.)
         // 2. Must have at least one of: volt, temp, or charge (battery-related data)
         let is_valid_status = status.as_ref().map_or(false, |s| {
-            let s_clean = s.trim_end_matches(|c: char| c == ',' || c == '.' || c.is_whitespace()).to_lowercase();
-            s_clean == "charging" || s_clean == "discharging" || s_clean == "not-charging"
+            // Optimize: check end characters first before creating new string
+            let s_trimmed = s.trim_end_matches(|c: char| c == ',' || c == '.' || c.is_whitespace());
+            let s_lower = s_trimmed.to_lowercase();
+            s_lower == "charging" || s_lower == "discharging" || s_lower == "not-charging"
         });
         
         let has_battery_data = volt.is_some() || temp.is_some() || charge.is_some();

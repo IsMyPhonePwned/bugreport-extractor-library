@@ -33,8 +33,8 @@ struct Args {
     #[arg(short, long, required_unless_present = "compare")]
     file_path: Option<String>,
 
-    /// The type of parser(s) to use. Can be specified multiple times.
-    #[arg(short, long, value_enum, num_args = 1.., required_unless_present = "compare")]
+    /// The type of parser(s) to use. Can be specified multiple times. If not provided, all parsers will run.
+    #[arg(short, long, value_enum, num_args = 1..)]
     parser_type: Vec<ParserType>,
 
     /// Path to directory containing Sigma rules (YAML files)
@@ -80,6 +80,26 @@ struct Args {
     // Detection mode
     #[arg(short, long, num_args(0..=1),  default_missing_value = "default")]
     detection: Option<String>,
+}
+
+/// Get all available parser types
+fn get_all_parser_types() -> Vec<ParserType> {
+    vec![
+        ParserType::Header,
+        ParserType::Memory,
+        ParserType::Battery,
+        ParserType::Package,
+        ParserType::Process,
+        ParserType::Power,
+        ParserType::Usb,
+        ParserType::Crash,
+        ParserType::Network,
+        ParserType::Bluetooth,
+        ParserType::DevicePolicy,
+        ParserType::Adb,
+        ParserType::Authentication,
+        ParserType::Vpn,
+    ]
 }
 
 fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
@@ -143,10 +163,17 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
     }
 
+    // Determine which parsers to run - use all if none specified
+    let parser_types_to_use = if args.parser_type.is_empty() {
+        get_all_parser_types()
+    } else {
+        args.parser_type.clone()
+    };
+
     // Create a list of parser instances based on command-line arguments.
     let mut parsers_to_run: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = Vec::new();
 
-    for pt in &args.parser_type {
+    for pt in &parser_types_to_use {
         match pt {
             ParserType::Header => {
                 let header_parser = HeaderParser::new()?;
@@ -208,10 +235,17 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     if !show_progress {
-        println!(
-            "Processing file '{}' with {:?} parsers concurrently...",
-            file_path, args.parser_type
-        );
+        if args.parser_type.is_empty() {
+            println!(
+                "Processing file '{}' with all {} parsers concurrently...",
+                file_path, parser_types_to_use.len()
+            );
+        } else {
+            println!(
+                "Processing file '{}' with {:?} parsers concurrently...",
+                file_path, parser_types_to_use
+            );
+        }
     }
 
     // Load file with automatic ZIP detection and extraction
@@ -400,7 +434,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     // === WhisperPair Detection ===
     // Always run WhisperPair detection if Bluetooth parser was used
-    if args.parser_type.contains(&ParserType::Bluetooth) {
+    if parser_types_to_use.contains(&ParserType::Bluetooth) {
         if !show_progress {
             println!("\n=== WhisperPair Vulnerability Detection ===\n");
         }
@@ -566,10 +600,9 @@ fn run_comparison_mode(
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {   
     info!("Comparing {} → {}", before_file, after_file);
     
-    // Determine which parsers to use
+    // Determine which parsers to use - use all if none specified
     let parser_types = if args.parser_type.is_empty() {
-        // Default: use Package, Process, USB, Power for comparison
-        vec![ParserType::Package, ParserType::Process, ParserType::Usb, ParserType::Power]
+        get_all_parser_types()
     } else {
         args.parser_type.clone()
     };
