@@ -83,7 +83,9 @@ struct NetworkInterface {
 
 #[derive(Debug, Clone)]
 struct NetworkStats {
+    #[allow(dead_code)]
     uid: Option<i32>, // UIDs can be negative (e.g., -1 for system stats)
+    #[allow(dead_code)]
     package_name: Option<String>,
     rx_bytes: u64,
     tx_bytes: u64,
@@ -351,7 +353,7 @@ impl Parser for NetworkParser {
                         let (local_ip, local_port) = Self::parse_address_port(&local_addr);
                         let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
 
-                        let mut socket = SocketConnection {
+                        let socket = SocketConnection {
                             protocol,
                             local_address: local_addr,
                             remote_address: remote_addr,
@@ -408,7 +410,7 @@ impl Parser for NetworkParser {
                         let (local_ip, local_port) = Self::parse_address_port(&local_addr);
                         let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
 
-                        let mut socket = SocketConnection {
+                        let socket = SocketConnection {
                             protocol: "tcp".to_string(),
                             local_address: local_addr,
                             remote_address: remote_addr,
@@ -864,7 +866,7 @@ impl Parser for NetworkParser {
                         let rest = &after_first_colon[after_first_colon.find(':').unwrap() + 1..];
                         let mut flags = Vec::new();
                         let mut mtu = None;
-                        let mut ip_addresses = Vec::new();
+                        let ip_addresses = Vec::new();
 
                         // Parse flags from <FLAG1,FLAG2,...>
                         if let Some(flags_start) = rest.find('<') {

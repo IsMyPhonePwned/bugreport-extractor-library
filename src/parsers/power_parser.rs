@@ -12,6 +12,7 @@ struct PowerEvent {
     details: Option<String>,
 }
 
+#[allow(dead_code)]
 #[derive(Debug)]
 struct ResetReason {
     reason: String,

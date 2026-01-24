@@ -12,7 +12,7 @@ use sigma_zero::engine::SigmaEngine;
 
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
-    AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser
+    AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser, VpnParser
 };
 use bugreport_extractor_library::sigma_integration;
 use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
@@ -199,6 +199,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             ParserType::Authentication => {
                 let auth_parser = AuthenticationParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(auth_parser)));
+            },
+            ParserType::Vpn => {
+                let vpn_parser = VpnParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(vpn_parser)));
             },
         }
     }
@@ -626,6 +630,10 @@ fn run_comparison_mode(
                 let parser = AuthenticationParser::new().expect("Failed to create AuthenticationParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::Vpn => {
+                let parser = VpnParser::new().expect("Failed to create VpnParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
         }
     }
     
@@ -697,6 +705,10 @@ fn run_comparison_mode(
             },
             ParserType::Authentication => {
                 let parser = AuthenticationParser::new().expect("Failed to create AuthenticationParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
+            ParserType::Vpn => {
+                let parser = VpnParser::new().expect("Failed to create VpnParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
             },
         }

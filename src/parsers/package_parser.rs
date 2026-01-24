@@ -502,7 +502,7 @@ impl PackageParser {
             let mut uid = None;
             
             // Look for package name starting from index 1
-            for (idx, part) in parts.iter().enumerate().skip(1) {
+            for (_idx, part) in parts.iter().enumerate().skip(1) {
                 // Check if this part contains a dot (likely a package name)
                 if part.contains('.') {
                     // Check if package name has UID concatenated at the end

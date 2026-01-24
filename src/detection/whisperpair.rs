@@ -41,6 +41,7 @@ pub struct WhisperPairDetector {
     // Index for fast lookup by name
     name_index: HashMap<String, Vec<usize>>,
     // Index for fast lookup by manufacturer
+    #[allow(dead_code)]
     manufacturer_index: HashMap<String, Vec<usize>>,
 }
 

@@ -106,6 +106,11 @@ impl DevicePolicyParser {
                 continue;
             }
             
+            // Stop if we hit the next user's admins section
+            if line.starts_with("Enabled Device Admins") {
+                break;
+            }
+            
             // Stop if we hit a new key=value line or section
             if line.contains('=') || line.starts_with("passwordQuality") || 
                line.starts_with("minimumPassword") || line.starts_with("maximum") ||
@@ -191,12 +196,16 @@ impl DevicePolicyParser {
                 continue;
             }
             
-            // Stop conditions
+            // Stop conditions - check these BEFORE parsing any fields
+            if line.starts_with("Enabled Device Admins") {
+                // Next user's admins section - stop immediately
+                break;
+            }
             if line.starts_with("com.") && line.contains('/') && !line.contains('=') {
                 // Next admin component
                 break;
             }
-            if line.starts_with("Enabled Device Admins") || line.starts_with("Profile Owner") ||
+            if line.starts_with("Profile Owner") ||
                line.starts_with("mPasswordOwner") || line.starts_with("Constants:") ||
                line.starts_with("Stats:") || line.starts_with("Local Policies:") ||
                line.starts_with("Global Policies:") || line.starts_with("Device policy cache:") ||

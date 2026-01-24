@@ -990,7 +990,7 @@ mod exploitation_detector_tests {
     fn test_detect_multiple_apps() {
         let detector = ExploitationDetector::new();
         
-        let mut app1 = create_clean_app(1010102, "com.example.clean");
+        let app1 = create_clean_app(1010102, "com.example.clean");
         
         let mut app2 = create_clean_app(1010103, "com.example.exploited");
         app2.cpu_user_time_ms = 10_000;

@@ -535,14 +535,13 @@ impl CrashParser {
     }
 
     fn parse_frame_details(rest: &str) -> (String, Option<String>, Option<String>, Option<String>) {
-        let mut library = String::new();
         let mut function = None;
         let mut offset = None;
         let mut build_id = None;
 
         // Split by first parenthesis to separate library from function
-        if let Some(first_paren) = rest.find('(') {
-            library = rest[..first_paren].trim().to_string();
+        let library = if let Some(first_paren) = rest.find('(') {
+            let lib = rest[..first_paren].trim().to_string();
             
             // Everything after is either function info or BuildId
             let after_paren = &rest[first_paren + 1..];
@@ -581,10 +580,12 @@ impl CrashParser {
                     }
                 }
             }
+            
+            lib
         } else {
             // No parentheses, just library
-            library = rest.trim().to_string();
-        }
+            rest.trim().to_string()
+        };
 
         (library, function, offset, build_id)
     }

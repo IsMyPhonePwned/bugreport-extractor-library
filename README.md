@@ -31,17 +31,151 @@ cargo build --release
 
 ## Parsers
 
-- Header
-- Memory
-- Package
-- Power
-- Process
-- USB
-- Battery
-- Crash
+The library includes the following parsers, each extracting specific information from Android bug reports:
 
+### Header Parser
+Extracts metadata from the dumpstate header section.
+- **Timestamp**: When the bug report was generated
+- **Build information**: Build fingerprint, version, etc.
+- **Device information**: Model, manufacturer, etc.
+- **Key-value pairs**: All metadata fields from the header
 
-Each parser could take the data from multiple place in the dumpstate file.
+### Memory Parser
+Extracts memory statistics from `/proc/meminfo`.
+- **Memory metrics**: Total, free, available, cached, buffers
+- **Swap information**: Swap total, free, cached
+- **Kernel memory**: Slab, page tables, etc.
+- **Multiple snapshots**: Can extract multiple memory info sections if present
+
+### Package Parser
+Extracts installed application information from the package manager dump.
+- **Package details**: Name, version, UID, installation path
+- **Permissions**: Granted and requested permissions per package
+- **User-specific data**: Per-user installation status, data directories
+- **Installation logs**: Timestamps and details of package installations/updates
+- **App components**: Activities, services, receivers, providers
+- **Signing information**: Package signatures and certificates
+
+### Power Parser
+Extracts power-related events and reset reasons.
+- **Power events**: Shutdown, reboot, screen on/off events
+- **Reset reasons**: Why the device was reset (crash, user action, etc.)
+- **Power history**: Timeline of power state changes
+- **Event details**: Flags, timestamps, and additional context
+
+### Process Parser
+Extracts running processes and thread information.
+- **Process information**: PID, user, command, memory usage (VSS, RSS)
+- **Thread details**: TID, CPU usage, status, thread names
+- **CPU statistics**: Per-process and per-thread CPU percentages
+- **Process hierarchy**: Parent-child relationships
+
+### USB Parser
+Extracts USB device and port information.
+- **USB devices**: Vendor ID (VID), Product ID (PID), manufacturer, product name
+- **USB ports**: Port status, connection state, power/data roles
+- **Device events**: Timeline of add, bind, unbind, remove, change events
+- **Interface information**: USB interfaces and drivers
+- **Timestamps**: First seen, last seen, and state change times
+
+### Battery Parser
+Extracts comprehensive battery and power usage statistics.
+- **App battery stats**: 
+  - Network usage (mobile/WiFi TX/RX bytes)
+  - CPU time (user/system)
+  - Wakelocks (name, type, duration, count)
+  - Background jobs (name, time, count)
+  - Foreground service time
+- **Hardware information**: 
+  - Voltage (main, sub, charger input)
+  - Current (now, average, charging)
+  - State of charge (SOC) percentages
+  - Temperature readings (battery, USB, charger, wireless, etc.)
+- **Battery history**: 
+  - Status changes (charging, discharging, not-charging)
+  - Health status
+  - Plug type (AC, USB, wireless, none)
+  - Voltage, current, charge levels over time
+  - Temperature readings
+  - State change flags
+- **Version information**: SDK version and build numbers
+
+### Crash Parser
+Extracts crash dumps (tombstones) and ANR (Application Not Responding) events.
+- **Tombstones**:
+  - Process information (PID, TID, UID, process name)
+  - Signal and fault address
+  - Stack traces with backtrace frames
+  - Register states (PC, SP, LR, etc.)
+  - Build fingerprint and ABI
+  - Abort messages
+- **ANR files**:
+  - Process and thread information
+  - ANR reason and stack traces
+  - CPU usage at time of ANR
+  - File permissions and metadata
+
+### Network Parser
+Extracts network connectivity and statistics.
+- **Socket connections**: 
+  - TCP/UDP sockets with local/remote addresses and ports
+  - Connection state, UID, inode
+  - Receive/send queue sizes
+- **Network interfaces**: 
+  - Interface names, IP addresses (IPv4/IPv6)
+  - Flags, MTU
+  - RX/TX byte statistics
+- **Network statistics**: 
+  - Per-UID network usage (mobile/WiFi)
+  - Packet counts
+  - Network type, RAT type, metered status
+  - WiFi network names, subscriber IDs
+
+### Bluetooth Parser
+Extracts Bluetooth device information.
+- **Bonded devices**: MAC addresses (masked and full), device names
+- **Connected devices**: Connection status, transport type
+- **Device details**: 
+  - Device class, manufacturer
+  - Services and UUIDs
+  - Identity addresses
+  - Link types
+
+### Device Policy Parser
+Extracts device administration and policy information.
+- **Device admins**: Enabled device admin receivers per user
+- **Profile owners**: Work profile owner information
+- **App restrictions**: Per-app policy restrictions
+- **Policy configurations**: Key-value policy settings
+- **Component information**: Package and receiver details
+
+### ADB Parser
+Extracts Android Debug Bridge (ADB) connection information.
+- **ADB state**: Connection status, debugging enabled
+- **Authorized keys**: List of authorized ADB keys
+- **PC connections**: Connected computer information
+- **Debugging manager**: Detailed debugging state
+
+### Authentication Parser
+Extracts user authentication events.
+- **Authentication events**: 
+  - Timestamp, user ID, success status
+  - Authentication type (biometric, passcode, password, pattern)
+  - Event source (keystore2, PowerManagerService)
+  - Wake reasons (for screen wake events)
+  - Process UID/PID (for PowerManagerService events)
+- **Event timeline**: Chronological list of all authentication attempts
+
+### VPN Parser
+Extracts VPN configuration and network properties.
+- **Current VPNs**: 
+  - User ID to VPN package mapping
+  - VPN package names
+- **Network properties**: 
+  - VPN-related network configuration
+  - Key-value property pairs
+
+Each parser extracts data from specific sections within the dumpstate file, and some parsers may gather information from multiple sections to provide a complete picture.
 
 ## Usage
 

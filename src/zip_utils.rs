@@ -68,7 +68,7 @@ fn extract_dumpstate_from_archive<R: Read + std::io::Seek>(
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name();
-        let name_lower = name.to_lowercase();
+        let _name_lower = name.to_lowercase();
         
         // Extract just the filename (without path)
         let filename = name.split('/').last().unwrap_or(name);
@@ -93,7 +93,7 @@ fn extract_dumpstate_from_archive<R: Read + std::io::Seek>(
     for i in 0..archive.len() {
         let mut file = archive.by_index(i)?;
         let name = file.name();
-        let name_lower = name.to_lowercase();
+        let _name_lower = name.to_lowercase();
         
         // Extract just the filename (without path)
         let filename = name.split('/').last().unwrap_or(name);
@@ -163,7 +163,7 @@ fn extract_dumpstate_from_archive<R: Read + std::io::Seek>(
     // Prefer files at the root level
     let mut candidates: Vec<(String, u64, usize)> = Vec::new();
     for i in 0..archive.len() {
-        let mut file = archive.by_index(i)?;
+        let file = archive.by_index(i)?;
         let name = file.name();
         
         // Look for any large .txt file
