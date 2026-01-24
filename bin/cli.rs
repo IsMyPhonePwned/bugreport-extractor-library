@@ -14,8 +14,8 @@ use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::parsers::{
     AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, ProcessParser, UsbParser, VpnParser
 };
-use bugreport_extractor_library::sigma_integration;
-use bugreport_extractor_library::sigma_output::{should_output_match, output_match, output_match_with_log, SigmaStats};
+use bugreport_extractor_library::detection::sigma;
+use bugreport_extractor_library::detection::sigma::{should_output_match, output_match, output_match_with_log, SigmaStats};
 use bugreport_extractor_library::progress::ProgressTracker;
 use bugreport_extractor_library::comparison;
 
@@ -80,6 +80,23 @@ struct Args {
     // Detection mode
     #[arg(short, long, num_args(0..=1),  default_missing_value = "default")]
     detection: Option<String>,
+
+    /// Which detection system(s) to use: "internal" (exploitation detector), "sigma" (Sigma rules), or "both" (default: auto-detect based on flags)
+    #[arg(long, value_enum, default_value = "auto")]
+    detection_type: DetectionType,
+}
+
+/// Type of detection system to use
+#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq)]
+enum DetectionType {
+    /// Use only internal exploitation detection
+    Internal,
+    /// Use only Sigma rule detection
+    Sigma,
+    /// Use both internal and Sigma detection
+    Both,
+    /// Auto-detect: use internal if --detection is set, use Sigma if --rules-dir is set, use both if both are set
+    Auto,
 }
 
 /// Get all available parser types
@@ -142,9 +159,24 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
 
     let start_time = Instant::now();
 
-    // Initialize Sigma engine if rules directory provided and not skipped
+    // Determine which detection systems to use
+    let use_internal = match args.detection_type {
+        DetectionType::Internal => true,
+        DetectionType::Sigma => false,
+        DetectionType::Both => true,
+        DetectionType::Auto => args.detection.is_some(),
+    };
+    
+    let use_sigma = match args.detection_type {
+        DetectionType::Internal => false,
+        DetectionType::Sigma => true,
+        DetectionType::Both => true,
+        DetectionType::Auto => args.rules_dir.is_some() && !args.no_sigma,
+    };
+
+    // Initialize Sigma engine if Sigma detection is enabled
     let mut engine_opt: Option<SigmaEngine> = None;
-    if !args.no_sigma {
+    if use_sigma {
         if let Some(ref rules_dir) = args.rules_dir {
             let rule_pb = progress.create_rule_loading_progress();
             info!("Loading Sigma rules from {:?}...", rules_dir);
@@ -159,7 +191,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             info!("Loaded {} Sigma rules", rules_loaded);
             engine_opt = Some(engine);
         } else {
-            warn!("No rules directory provided. Use --rules-dir to enable Sigma detection.");
+            warn!("Sigma detection requested but no rules directory provided. Use --rules-dir to enable Sigma detection.");
         }
     }
 
@@ -323,10 +355,15 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }    
     }
 
-    // === Detection ===
-    if args.detection.is_some() {
+    // === Internal Detection ===
+    if use_internal {
         if !show_progress {
-            println!("\n=== Security Detection Analysis ===\n");
+            println!("\n=== Internal Security Detection Analysis ===\n");
+        }
+        
+        // Check if detection config is provided
+        if args.detection.is_none() {
+            warn!("Internal detection requested but no --detection flag provided. Using default configuration.");
         }
                 
         // Collect battery stats and crash info from parser results
@@ -538,6 +575,11 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     }
 
     // === Sigma Rule Evaluation ===
+    if use_sigma && engine_opt.is_none() && !show_progress {
+        println!("\n⚠️  Sigma detection was requested but could not be enabled.");
+        println!("   Please provide --rules-dir to enable Sigma rule evaluation.\n");
+    }
+    
     if let Some(engine) = engine_opt {
         if !show_progress {
             println!("\n=== Starting Sigma Rule Evaluation ===\n");
@@ -546,7 +588,7 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         let mut stats = SigmaStats::new();
         
         // Extract log entries from all parser results
-        let all_entries = sigma_integration::extract_all_log_entries(&results);
+        let all_entries = sigma::extract_all_log_entries(&results);
         
         // Calculate total entries for progress tracking
         let total_entries: usize = all_entries.iter().map(|(_, entries)| entries.len()).sum();

@@ -121,10 +121,17 @@ fn extract_package_entries(output: &Value) -> Option<Vec<LogEntry>> {
     let mut packages_section_count = 0;
     let mut total_service_logs = 0;
     let mut total_package_logs = 0;
+    let mut total_packages_converted = 0;
     let mut conversion_errors = 0;
     
     for (section_idx, section) in sections.iter().enumerate() {
         debug!("Package parser: Processing section {} of {}", section_idx + 1, sections.len());
+        
+        // Log all keys in this section for debugging
+        if let Some(section_obj) = section.as_object() {
+            let section_keys: Vec<String> = section_obj.keys().cloned().collect();
+            debug!("Package parser: Section {} has keys: {:?}", section_idx + 1, section_keys);
+        }
         
         // Check for install_logs at the top level (service blocks)
         if let Some(logs) = section["install_logs"].as_array() {
@@ -133,7 +140,11 @@ fn extract_package_entries(output: &Value) -> Option<Vec<LogEntry>> {
             debug!("Package parser: Section {} has {} install_logs at top level (service block)", section_idx + 1, logs.len());
             
             for (log_idx, log_entry) in logs.iter().enumerate() {
-                match json_to_log_entry(log_entry.clone()) {
+                // Try to extract package name from the log entry itself (it might have "pkg" field)
+                // If not present, we can't add package_name for service block logs as they don't have package context
+                let enriched_entry = log_entry.clone();
+                
+                match json_to_log_entry(enriched_entry) {
                     Ok(entry) => entries.push(entry),
                     Err(e) => {
                         conversion_errors += 1;
@@ -144,52 +155,94 @@ fn extract_package_entries(output: &Value) -> Option<Vec<LogEntry>> {
                 }
             }
         } else {
-            debug!("Package parser: Section {} does not have 'install_logs' at top level", section_idx + 1);
+            debug!("Package parser: Section {} does not have 'install_logs' at top level. Checking if it's a service block with other keys...", section_idx + 1);
+            // Check if this is a service block (has pid, client_pids, threads) but no install_logs
+            if section.get("pid").is_some() || section.get("client_pids").is_some() {
+                debug!("Package parser: Section {} appears to be a service block (has pid/client_pids) but no install_logs found", section_idx + 1);
+            }
         }
         
-        // Check for packages section with nested install_logs
+        // Check for packages section - convert each package to a log entry
         if let Some(packages) = section["packages"].as_array() {
             packages_section_count += 1;
             debug!("Package parser: Section {} has {} packages", section_idx + 1, packages.len());
             
+            let mut packages_converted = 0;
+            let mut install_logs_converted = 0;
+            
             for (pkg_idx, package) in packages.iter().enumerate() {
                 let pkg_name = package["package_name"].as_str().unwrap_or("unknown");
                 
-                if let Some(logs) = package["install_logs"].as_array() {
-                    total_package_logs += logs.len();
-                    debug!("Package parser: Package {} ({}) has {} install_logs", pkg_idx + 1, pkg_name, logs.len());
-                    
-                    for (log_idx, log_entry) in logs.iter().enumerate() {
-                        // Add package_name to the log entry if not already present
-                        let mut enriched_entry = log_entry.clone();
-                        if let Some(entry_obj) = enriched_entry.as_object_mut() {
-                            // Only add package_name if it's not already in the log entry
-                            if !entry_obj.contains_key("package_name") && !entry_obj.contains_key("pkg") {
-                                entry_obj.insert("package_name".to_string(), json!(pkg_name));
-                            }
+                // Convert the package itself to a log entry (package_name, lastUpdateTime, resourcePath, etc.)
+                // Create a copy of the package object, but exclude nested structures like "users" and "install_logs"
+                // that should be handled separately
+                let mut package_entry = json!({});
+                if let Some(package_obj) = package.as_object() {
+                    for (key, value) in package_obj.iter() {
+                        // Skip nested objects/arrays that should be handled separately
+                        if key == "users" || key == "install_logs" {
+                            continue;
                         }
+                        // Include all other fields (package_name, lastUpdateTime, resourcePath, etc.)
+                        package_entry[key] = value.clone();
+                    }
+                }
+                
+                // Convert package metadata to log entry
+                match json_to_log_entry(package_entry.clone()) {
+                    Ok(entry) => {
+                        entries.push(entry);
+                        packages_converted += 1;
+                        total_packages_converted += 1;
+                        debug!("Package parser: Converted package {} ({}) to log entry", pkg_idx + 1, pkg_name);
+                    }
+                    Err(e) => {
+                        conversion_errors += 1;
+                        warn!("Package parser: Failed to convert package {} ({}) to log entry: {}. Package: {:?}", 
+                            pkg_idx + 1, pkg_name, e, package_entry);
+                    }
+                }
+                
+                // Also handle install_logs if they exist (for backward compatibility)
+                if let Some(logs) = package["install_logs"].as_array() {
+                    if !logs.is_empty() {
+                        install_logs_converted += logs.len();
+                        debug!("Package parser: Package {} ({}) has {} install_logs", pkg_idx + 1, pkg_name, logs.len());
                         
-                        match json_to_log_entry(enriched_entry) {
-                            Ok(entry) => entries.push(entry),
-                            Err(e) => {
-                                conversion_errors += 1;
-                                warn!("Package parser: Failed to convert log entry {} for package {} ({}): {}. Entry: {:?}", 
-                                    log_idx + 1, pkg_idx + 1, pkg_name, e, log_entry);
-                                continue;
+                        for (log_idx, log_entry) in logs.iter().enumerate() {
+                            // Add package_name to the log entry if not already present
+                            let mut enriched_entry = log_entry.clone();
+                            if let Some(entry_obj) = enriched_entry.as_object_mut() {
+                                // Only add package_name if it's not already in the log entry
+                                if !entry_obj.contains_key("package_name") && !entry_obj.contains_key("pkg") {
+                                    entry_obj.insert("package_name".to_string(), json!(pkg_name));
+                                }
+                            }
+                            
+                            match json_to_log_entry(enriched_entry) {
+                                Ok(entry) => entries.push(entry),
+                                Err(e) => {
+                                    conversion_errors += 1;
+                                    warn!("Package parser: Failed to convert install_log entry {} for package {} ({}): {}. Entry: {:?}", 
+                                        log_idx + 1, pkg_idx + 1, pkg_name, e, log_entry);
+                                    continue;
+                                }
                             }
                         }
                     }
-                } else {
-                    debug!("Package parser: Package {} ({}) does not have 'install_logs'", pkg_idx + 1, pkg_name);
                 }
             }
+            
+            debug!("Package parser: Section {} packages summary: {} packages converted, {} install_logs converted", 
+                section_idx + 1, packages_converted, install_logs_converted);
+            total_package_logs += install_logs_converted;
         } else {
             debug!("Package parser: Section {} does not have 'packages' array", section_idx + 1);
         }
     }
     
-    debug!("Package parser: Summary - {} service blocks ({} logs), {} packages sections ({} logs), {} conversion errors, {} total entries extracted", 
-        service_block_count, total_service_logs, packages_section_count, total_package_logs, conversion_errors, entries.len());
+    debug!("Package parser: Summary - {} service blocks ({} logs), {} packages sections ({} packages, {} install_logs), {} conversion errors, {} total entries extracted", 
+        service_block_count, total_service_logs, packages_section_count, total_packages_converted, total_package_logs, conversion_errors, entries.len());
     
     if entries.is_empty() {
         warn!("Package parser: No log entries extracted. Found {} sections, {} service blocks, {} packages sections", 
@@ -585,11 +638,14 @@ mod tests {
         assert_eq!(entries.len(), 1);
         
         // Test packages section with nested install_logs
+        // Now we convert both the package metadata AND install_logs
         let output2 = json!([
             {
                 "packages": [
                     {
                         "package_name": "com.example.app",
+                        "lastUpdateTime": "2025-03-28 02:22:45",
+                        "resourcePath": "/data/app/com.example.app",
                         "install_logs": [
                             {
                                 "timestamp": "2025-03-28 02:22:45.340",
@@ -603,9 +659,11 @@ mod tests {
         ]);
         
         let entries2 = extract_package_entries(&output2).unwrap();
-        assert_eq!(entries2.len(), 1);
+        // Should have 2 entries: 1 for package metadata + 1 for install_log
+        assert_eq!(entries2.len(), 2);
         
         // Test mixed structure (both service block and packages)
+        // Now we convert both package metadata AND install_logs
         let output3 = json!([
             {
                 "install_logs": [
@@ -620,6 +678,8 @@ mod tests {
                 "packages": [
                     {
                         "package_name": "com.example.app",
+                        "lastUpdateTime": "2025-03-28 02:22:46",
+                        "resourcePath": "/data/app/com.example.app",
                         "install_logs": [
                             {
                                 "timestamp": "2025-03-28 02:22:46.340",
@@ -633,7 +693,8 @@ mod tests {
         ]);
         
         let entries3 = extract_package_entries(&output3).unwrap();
-        assert_eq!(entries3.len(), 2);
+        // Should have 3 entries: 1 service block log + 1 package metadata + 1 package install_log
+        assert_eq!(entries3.len(), 3);
     }
 
     #[test]

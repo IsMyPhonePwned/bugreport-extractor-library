@@ -11,8 +11,6 @@ pub mod progress;
 
 // Re-export the modules so it can be accessed from main.rs
 pub mod parsers;
-pub mod sigma_integration;
-pub mod sigma_output;
 pub mod comparison;
 pub mod detection;
 pub mod timing;
