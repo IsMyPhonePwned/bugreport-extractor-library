@@ -280,6 +280,27 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         );
     }
 
+    // Display timing information for each parser
+    if !show_progress {
+        println!("\n=== Parser Performance ===");
+        let mut sorted_results: Vec<_> = results.iter().collect();
+        // Sort by duration (slowest first) for easier identification of bottlenecks
+        sorted_results.sort_by(|a, b| b.2.cmp(&a.2));
+        
+        let mut total_time = std::time::Duration::ZERO;
+        for (parser_type, result, duration) in &sorted_results {
+            let status = match result {
+                Ok(_) => "✓",
+                Err(_) => "✗",
+            };
+            let duration_ms = duration.as_secs_f64() * 1000.0;
+            println!("  {} {:?}: {:.2}ms", status, parser_type, duration_ms);
+            total_time += *duration;
+        }
+        println!("  Total time: {:.2}ms", total_time.as_secs_f64() * 1000.0);
+        println!();
+    }
+
     // Print the JSON result from each parser.
     if show_parser_results {
         for (parser_type, result, duration) in &results {
@@ -597,7 +618,8 @@ fn run_comparison_mode(
     after_file: &str,
     args: &Args,
     progress: &ProgressTracker,
-) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {   
+) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
+    let show_progress = !args.no_progress && args.output_format != "silent" && !args.verbose;   
     info!("Comparing {} → {}", before_file, after_file);
     
     // Determine which parsers to use - use all if none specified
@@ -684,6 +706,23 @@ fn run_comparison_mode(
     
     let before_results = run_parsers_concurrently(file_content, parsers_before);
     
+    // Display timing for BEFORE file parsers
+    if !show_progress {
+        println!("\n=== Parser Performance (BEFORE file) ===");
+        let mut sorted_before: Vec<_> = before_results.iter().collect();
+        sorted_before.sort_by(|a, b| b.2.cmp(&a.2));
+        
+        for (parser_type, result, duration) in &sorted_before {
+            let status = match result {
+                Ok(_) => "✓",
+                Err(_) => "✗",
+            };
+            let duration_ms = duration.as_secs_f64() * 1000.0;
+            println!("  {} {:?}: {:.2}ms", status, parser_type, duration_ms);
+        }
+        println!();
+    }
+    
     // Create parser instances for AFTER file
     let mut parsers_after: Vec<(ParserType, Box<dyn DataParser + Send + Sync>)> = Vec::new();
     for pt in &parser_types {
@@ -760,6 +799,23 @@ fn run_comparison_mode(
     );
     
     let after_results = run_parsers_concurrently(file_content, parsers_after);
+    
+    // Display timing for AFTER file parsers
+    if !show_progress {
+        println!("\n=== Parser Performance (AFTER file) ===");
+        let mut sorted_after: Vec<_> = after_results.iter().collect();
+        sorted_after.sort_by(|a, b| b.2.cmp(&a.2));
+        
+        for (parser_type, result, duration) in &sorted_after {
+            let status = match result {
+                Ok(_) => "✓",
+                Err(_) => "✗",
+            };
+            let duration_ms = duration.as_secs_f64() * 1000.0;
+            println!("  {} {:?}: {:.2}ms", status, parser_type, duration_ms);
+        }
+        println!();
+    }
     
     // Convert results to HashMap for easier comparison
     let mut before_map: HashMap<ParserType, serde_json::Value> = HashMap::new();
