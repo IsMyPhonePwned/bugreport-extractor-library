@@ -627,6 +627,11 @@ impl CrashParser {
         for line in data_lines {
             let trimmed = line.trim();
             
+            // Skip section markers (lines starting with "------")
+            if trimmed.starts_with("------") {
+                continue;
+            }
+            
             // Parse "total NNNN" line
             if trimmed.starts_with("total ") {
                 if let Some(size_str) = trimmed.strip_prefix("total ") {
@@ -1164,6 +1169,36 @@ total 892
     }
 
     #[test]
+    fn test_parse_anr_files_with_duration_marker() {
+        // Test with real-world format including duration marker
+        let content = r#"
+------ ANR FILES (ls -lt /data/anr/) ------
+total 236
+-rw------- 1 system system 239325 2025-09-15 18:38 anr_2025-09-15-18-38-21-363
+------ 0.006s was the duration of 'ANR FILES' ------
+        "#;
+
+        let parser = CrashParser::new().unwrap();
+        let result = parser.parse(content.as_bytes()).unwrap();
+        let crash_info: CrashInfo = serde_json::from_value(result).unwrap();
+        
+        assert!(crash_info.anr_files.is_some());
+        let anr_files = crash_info.anr_files.unwrap();
+        
+        assert_eq!(anr_files.total_size, 236);
+        assert_eq!(anr_files.files.len(), 1);
+        
+        // Check the file
+        let file0 = &anr_files.files[0];
+        assert_eq!(file0.permissions, "-rw-------");
+        assert_eq!(file0.owner, "system");
+        assert_eq!(file0.group, "system");
+        assert_eq!(file0.size, 239325);
+        assert_eq!(file0.timestamp, "2025-09-15 18:38");
+        assert_eq!(file0.filename, "anr_2025-09-15-18-38-21-363");
+    }
+
+    #[test]
     fn test_parse_anr_trace_section() {
         let content = r#"
 ------ VM TRACES AT LAST ANR (/data/anr/anr_2025-03-28-10-30-45-543) ------
@@ -1353,4 +1388,5 @@ backtrace:
         // Verify it can be deserialized back
         let _: CrashInfo = serde_json::from_str(&json_str).unwrap();
     }
+
 }
