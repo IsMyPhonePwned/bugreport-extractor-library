@@ -260,6 +260,9 @@ impl CrashParser {
         let mut in_backtrace = false;
 
         for line in content.lines() {
+            // Check if this line is from DEBUG tag before stripping
+            let is_debug_line = Self::is_debug_line(line);
+            
             // Strip logcat prefix first for all checks
             let line_content = Self::strip_logcat_prefix(line);
             
@@ -296,6 +299,12 @@ impl CrashParser {
             }
 
             if let Some(ref mut tombstone) = current_tombstone {
+                // If we're in a tombstone and encounter a non-DEBUG line, finish this tombstone
+                if !is_debug_line {
+                    tombstones.push(current_tombstone.take().unwrap());
+                    in_backtrace = false;
+                    continue;
+                }
                 // Check for backtrace start
                 if line_content.starts_with("backtrace:") {
                     in_backtrace = true;
@@ -391,6 +400,38 @@ impl CrashParser {
         }
 
         tombstones
+    }
+
+    fn is_debug_line(line: &str) -> bool {
+        // Check if line is from DEBUG tag
+        // Logcat format: "MM-DD HH:MM:SS.mmm  PID  TID  PID LEVEL TAG : content"
+        // Example: "11-08 17:54:04.540 10120  6693  6693 F DEBUG   : *** *** ***"
+        
+        let trimmed = line.trim();
+        
+        // Check if line matches logcat pattern
+        if trimmed.len() > 40 {
+            // Look for the pattern "MM-DD HH:MM:SS"
+            let bytes = trimmed.as_bytes();
+            if bytes.len() > 18 &&
+               bytes[2] == b'-' &&
+               bytes[5] == b' ' &&
+               bytes[8] == b':' &&
+               bytes[11] == b':' {
+                // Find the TAG field (between last PID and ': ')
+                if let Some(colon_pos) = trimmed[20..].find(": ") {
+                    let before_colon = &trimmed[20..20 + colon_pos];
+                    // TAG is the last word before ': '
+                    if let Some(tag) = before_colon.trim().split_whitespace().last() {
+                        return tag == "DEBUG";
+                    }
+                }
+            }
+        }
+        
+        // If no logcat prefix, it's not a logcat line (might be raw tombstone)
+        // Allow lines without logcat prefix to be processed
+        true
     }
 
     fn strip_logcat_prefix(line: &str) -> &str {
@@ -1387,6 +1428,69 @@ backtrace:
         
         // Verify it can be deserialized back
         let _: CrashInfo = serde_json::from_str(&json_str).unwrap();
+    }
+
+    #[test]
+    fn test_tombstone_stops_at_non_debug_line() {
+        // Test that tombstone parsing stops when encountering non-DEBUG lines
+        let content = r#"
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : *** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : Build fingerprint: 'samsung/xxx/release-keys'
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : ABI: 'arm64'
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : pid: 5510, tid: 6679, name: thumbThread0  >>> com.test.app <<<
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : uid: 10120
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : signal 11 (SIGSEGV), code 2 (SEGV_ACCERR), fault addr 0x00000071661fa000
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   : backtrace:
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   :       #00 pc 00000000001de20c  /system/lib64/test.so (testFunc+552)
+11-08 17:54:04.540 10120  6693  6693 F DEBUG   :       #01 pc 00000000001f1324  /system/lib64/test.so (main+32)
+11-08 17:54:05.123  5510  5510  5510 I AppLog  : isSupportAmplifyAmbientSoundFeature supportedItems : NONE
+11-08 17:54:05.124  5510  5510  5510 I AppLog  : numberOfSpeaker - 1  isDualSpeaker - true
+11-08 17:54:05.125  5510  5510  5510 W Settings: Setting all_sound_off has moved
+        "#;
+
+        let parser = CrashParser::new().unwrap();
+        let result = parser.parse(content.as_bytes()).unwrap();
+        let crash_info: CrashInfo = serde_json::from_value(result).unwrap();
+        
+        // Should have parsed one tombstone
+        assert_eq!(crash_info.tombstones.len(), 1);
+        
+        let tombstone = &crash_info.tombstones[0];
+        
+        // Check basic fields
+        assert_eq!(tombstone.pid, 5510);
+        assert_eq!(tombstone.uid, 10120);
+        assert_eq!(tombstone.signal, "SIGSEGV");
+        
+        // Check backtrace - should only have 2 frames, NOT the app log lines
+        assert_eq!(tombstone.backtrace.len(), 2, "Backtrace should only contain DEBUG lines, not app logs");
+        
+        // Verify the frames are the actual backtrace frames
+        assert_eq!(tombstone.backtrace[0].frame, 0);
+        assert_eq!(tombstone.backtrace[1].frame, 1);
+        
+        // Make sure we didn't parse the app log lines as backtrace
+        for frame in &tombstone.backtrace {
+            assert!(!frame.raw_line.contains("isSupportAmplifyAmbientSoundFeature"));
+            assert!(!frame.raw_line.contains("numberOfSpeaker"));
+            assert!(!frame.raw_line.contains("Setting all_sound_off"));
+        }
+    }
+
+    #[test]
+    fn test_is_debug_line() {
+        // Test DEBUG line detection
+        assert!(CrashParser::is_debug_line("11-08 17:54:04.540 10120  6693  6693 F DEBUG   : *** *** ***"));
+        assert!(CrashParser::is_debug_line("11-08 17:54:04.540 10120  6693  6693 I DEBUG   : some message"));
+        
+        // Non-DEBUG lines should return false
+        assert!(!CrashParser::is_debug_line("11-08 17:54:05.123  5510  5510  5510 I AppLog  : some app log"));
+        assert!(!CrashParser::is_debug_line("11-08 17:54:05.124  5510  5510  5510 W Settings: some warning"));
+        assert!(!CrashParser::is_debug_line("11-08 17:54:05.125  5510  5510  5510 E System  : some error"));
+        
+        // Lines without logcat prefix should be allowed (raw tombstone format)
+        assert!(CrashParser::is_debug_line("*** *** *** *** *** *** *** *** *** *** *** *** *** *** *** ***"));
+        assert!(CrashParser::is_debug_line("Build fingerprint: 'samsung/xxx/release-keys'"));
     }
 
 }
