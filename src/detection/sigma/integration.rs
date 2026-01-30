@@ -84,6 +84,7 @@ fn extract_entries_for_parser(parser_type: &ParserType, output: &Value) -> Optio
         ParserType::Power => extract_power_entries(output),
         ParserType::Battery => extract_battery_entries(output),
         ParserType::Usb => extract_usb_entries(output),
+        ParserType::Crash => extract_crash_entries(output),
         // Header and Memory parsers don't produce security-relevant events
         _ => {
             debug!("{:?} parser: No Sigma extraction function implemented", parser_type);
@@ -102,6 +103,13 @@ fn extract_entries_for_parser(parser_type: &ParserType, output: &Value) -> Optio
 /// PackageParser returns an array where each element can be:
 /// 1. A service block with "install_logs" at the top level
 /// 2. A packages section with "packages" array, where each package can have "install_logs" nested inside
+///
+/// Install log entries include fields like:
+/// - timestamp, event_type, pkg, versionCode
+/// - initiatingPackageName: The package that initiated the installation
+/// - originatingPackageName: The package where the install originated from
+/// - installerPackageName: The installer package
+/// - observer, stagedDir, request_from
 fn extract_package_entries(output: &Value) -> Option<Vec<LogEntry>> {
     let mut entries = Vec::new();
     
@@ -418,85 +426,101 @@ fn extract_power_entries(output: &Value) -> Option<Vec<LogEntry>> {
 /// Extracts log entries from BatteryParser output
 fn extract_battery_entries(output: &Value) -> Option<Vec<LogEntry>> {
     let mut entries = Vec::new();
-    
-    let sections = match output.as_array() {
-        Some(arr) => {
-            debug!("Battery parser: Found {} sections in output", arr.len());
-            arr
-        }
-        None => {
-            warn!("Battery parser: Output is not an array, cannot extract log entries. Output type: {:?}", output);
-            return None;
-        }
-    };
-    
     let mut conversion_errors = 0;
-    let mut hsp_count = 0;
-    let mut version_info_count = 0;
+    let mut apps_count = 0;
+    let mut history_count = 0;
     
-    for (section_idx, section) in sections.iter().enumerate() {
-        // Extract HSP (High Power Service) records
-        if let Some(hsp_records) = section["hsp_records"].as_array() {
-            hsp_count += hsp_records.len();
-            debug!("Battery parser: Section {} has {} HSP records", section_idx + 1, hsp_records.len());
-            for (idx, hsp) in hsp_records.iter().enumerate() {
-                let mut log_json = json!({
-                    "event_type": "battery_hsp"
-                });
-                
-                if let Some(uid) = hsp["uid"].as_u64() {
-                    log_json["uid"] = json!(uid);
-                }
-                if let Some(name) = hsp["name"].as_str() {
-                    log_json["pkg"] = json!(name);
-                }
-                if let Some(index) = hsp["index"].as_u64() {
-                    log_json["index"] = json!(index);
-                }
-                
-                match json_to_log_entry(log_json) {
-                    Ok(entry) => entries.push(entry),
-                    Err(e) => {
-                        conversion_errors += 1;
-                        warn!("Battery parser: Failed to convert HSP record {} in section {}: {}. HSP: {:?}", idx + 1, section_idx + 1, e, hsp);
-                        continue;
-                    }
-                }
-            }
-        } else {
-            debug!("Battery parser: Section {} does not have 'hsp_records'", section_idx + 1);
-        }
+    // Battery parser returns an object with "apps", "hardware_info", "battery_history", "version_info"
+    if !output.is_object() {
+        warn!("Battery parser: Output is not an object, cannot extract log entries");
+        return None;
+    }
+    
+    // Extract from "apps" array (AppBatteryStats)
+    if let Some(apps) = output["apps"].as_array() {
+        apps_count = apps.len();
+        debug!("Battery parser: Found {} apps in output", apps_count);
         
-        // Extract version info
-        if let Some(version_info) = section.get("version_info") {
-            version_info_count += 1;
-            debug!("Battery parser: Section {} has version_info", section_idx + 1);
+        for (idx, app) in apps.iter().enumerate() {
             let mut log_json = json!({
-                "event_type": "battery_version"
+                "event_type": "battery_app_stats"
             });
             
-            if let Some(sdk) = version_info["sdk_version"].as_u64() {
-                log_json["sdk_version"] = json!(sdk);
+            // Copy all fields from AppBatteryStats
+            if let Some(uid) = app["uid"].as_u64() {
+                log_json["uid"] = json!(uid);
             }
-            if let Some(build) = version_info["build_number_1"].as_str() {
-                log_json["build_number"] = json!(build);
+            if let Some(pkg) = app["package_name"].as_str() {
+                log_json["package_name"] = json!(pkg.trim_matches('"'));
+            }
+            if let Some(cpu_user) = app["cpu_user_time_ms"].as_u64() {
+                log_json["cpu_user_time_ms"] = json!(cpu_user);
+            }
+            if let Some(cpu_system) = app["cpu_system_time_ms"].as_u64() {
+                log_json["cpu_system_time_ms"] = json!(cpu_system);
+            }
+            if let Some(fg_service) = app["foreground_service_time_ms"].as_u64() {
+                log_json["foreground_service_time_ms"] = json!(fg_service);
+            }
+            if let Some(net_bytes) = app["total_network_bytes"].as_u64() {
+                log_json["total_network_bytes"] = json!(net_bytes);
+            }
+            if let Some(wakelock_time) = app["total_wakelock_time_ms"].as_u64() {
+                log_json["total_wakelock_time_ms"] = json!(wakelock_time);
+            }
+            if let Some(job_count) = app["total_job_count"].as_u64() {
+                log_json["total_job_count"] = json!(job_count);
             }
             
             match json_to_log_entry(log_json) {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     conversion_errors += 1;
-                    warn!("Battery parser: Failed to convert version_info in section {}: {}. Version: {:?}", section_idx + 1, e, version_info);
-                    continue;
+                    warn!("Battery parser: Failed to convert app {} to log entry: {}. App: {:?}", idx + 1, e, app);
                 }
             }
-        } else {
-            debug!("Battery parser: Section {} does not have 'version_info'", section_idx + 1);
         }
     }
     
-    debug!("Battery parser: Extracted {} entries from {} HSP records and {} version_info entries ({} conversion errors)", 
-        entries.len(), hsp_count, version_info_count, conversion_errors);
+    // Extract from "battery_history" array
+    if let Some(history) = output["battery_history"].as_array() {
+        history_count = history.len();
+        debug!("Battery parser: Found {} battery history entries", history_count);
+        
+        for (idx, entry_data) in history.iter().enumerate() {
+            let mut log_json = json!({
+                "event_type": "battery_history"
+            });
+            
+            // Copy fields from BatteryHistoryEntry
+            if let Some(timestamp) = entry_data["timestamp"].as_str() {
+                log_json["timestamp"] = json!(timestamp);
+            }
+            if let Some(status) = entry_data["status"].as_str() {
+                log_json["status"] = json!(status);
+            }
+            if let Some(volt) = entry_data["volt"].as_u64() {
+                log_json["volt"] = json!(volt);
+            }
+            if let Some(temp) = entry_data["temp"].as_u64() {
+                log_json["temp"] = json!(temp);
+            }
+            if let Some(charge) = entry_data["charge"].as_u64() {
+                log_json["charge"] = json!(charge);
+            }
+            
+            match json_to_log_entry(log_json) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    conversion_errors += 1;
+                    warn!("Battery parser: Failed to convert battery history entry {}: {}. Entry: {:?}", idx + 1, e, entry_data);
+                }
+            }
+        }
+    }
+    
+    debug!("Battery parser: Extracted {} total entries ({} from apps, {} from history, {} conversion errors)", 
+        entries.len(), apps_count, history_count, conversion_errors);
     
     if entries.is_empty() {
         debug!("Battery parser: No log entries extracted");
@@ -614,6 +638,163 @@ fn extract_usb_entries(output: &Value) -> Option<Vec<LogEntry>> {
     }
 }
 
+/// Extracts log entries from CrashParser output
+fn extract_crash_entries(output: &Value) -> Option<Vec<LogEntry>> {
+    let mut entries = Vec::new();
+    let mut conversion_errors = 0;
+    let mut tombstone_count = 0;
+    let mut anr_file_count = 0;
+    let mut anr_trace_count = 0;
+    
+    // Crash parser returns an object with "tombstones", "anr_files", "anr_trace"
+    if !output.is_object() {
+        warn!("Crash parser: Output is not an object, cannot extract log entries");
+        return None;
+    }
+    
+    // Extract tombstones
+    if let Some(tombstones) = output["tombstones"].as_array() {
+        tombstone_count = tombstones.len();
+        debug!("Crash parser: Found {} tombstones", tombstone_count);
+        
+        for (idx, tombstone) in tombstones.iter().enumerate() {
+            let mut log_json = json!({
+                "event_type": "native_crash",
+                "crash_type": "tombstone"
+            });
+            
+            // Copy tombstone fields
+            if let Some(pid) = tombstone["pid"].as_u64() {
+                log_json["pid"] = json!(pid);
+            }
+            if let Some(tid) = tombstone["tid"].as_u64() {
+                log_json["tid"] = json!(tid);
+            }
+            if let Some(uid) = tombstone["uid"].as_u64() {
+                log_json["uid"] = json!(uid);
+            }
+            if let Some(process) = tombstone["process_name"].as_str() {
+                log_json["process_name"] = json!(process);
+            }
+            if let Some(signal) = tombstone["signal"].as_str() {
+                log_json["signal"] = json!(signal);
+            }
+            if let Some(code) = tombstone["code"].as_str() {
+                log_json["code"] = json!(code);
+            }
+            if let Some(fault_addr) = tombstone["fault_addr"].as_str() {
+                log_json["fault_addr"] = json!(fault_addr);
+            }
+            if let Some(timestamp) = tombstone["timestamp"].as_str() {
+                log_json["timestamp"] = json!(timestamp);
+            }
+            if let Some(abort_msg) = tombstone["abort_message"].as_str() {
+                if !abort_msg.is_empty() {
+                    log_json["abort_message"] = json!(abort_msg);
+                }
+            }
+            
+            // Add backtrace frame count
+            if let Some(backtrace) = tombstone["backtrace"].as_array() {
+                log_json["backtrace_frames"] = json!(backtrace.len());
+            }
+            
+            match json_to_log_entry(log_json) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    conversion_errors += 1;
+                    warn!("Crash parser: Failed to convert tombstone {}: {}. Tombstone: {:?}", idx + 1, e, tombstone);
+                }
+            }
+        }
+    }
+    
+    // Extract ANR files
+    if let Some(anr_files) = output.get("anr_files") {
+        if let Some(files) = anr_files["files"].as_array() {
+            anr_file_count = files.len();
+            debug!("Crash parser: Found {} ANR files", anr_file_count);
+            
+            for (idx, anr_file) in files.iter().enumerate() {
+                let mut log_json = json!({
+                    "event_type": "anr_file",
+                    "crash_type": "anr"
+                });
+                
+                if let Some(filename) = anr_file["filename"].as_str() {
+                    log_json["filename"] = json!(filename);
+                }
+                if let Some(size) = anr_file["size"].as_u64() {
+                    log_json["size"] = json!(size);
+                }
+                if let Some(timestamp) = anr_file["timestamp"].as_str() {
+                    log_json["timestamp"] = json!(timestamp);
+                }
+                if let Some(owner) = anr_file["owner"].as_str() {
+                    log_json["owner"] = json!(owner);
+                }
+                
+                match json_to_log_entry(log_json) {
+                    Ok(entry) => entries.push(entry),
+                    Err(e) => {
+                        conversion_errors += 1;
+                        warn!("Crash parser: Failed to convert ANR file {}: {}. File: {:?}", idx + 1, e, anr_file);
+                    }
+                }
+            }
+        }
+    }
+    
+    // Extract ANR trace
+    if let Some(anr_trace) = output.get("anr_trace") {
+        if let Some(threads) = anr_trace["threads"].as_array() {
+            anr_trace_count = threads.len();
+            debug!("Crash parser: Found ANR trace with {} threads", anr_trace_count);
+            
+            let mut log_json = json!({
+                "event_type": "anr_trace",
+                "crash_type": "anr",
+                "thread_count": threads.len()
+            });
+            
+            // Extract process info
+            if let Some(process_info) = anr_trace["process_info"].as_object() {
+                if let Some(pid) = process_info.get("pid").and_then(|v| v.as_str()) {
+                    log_json["pid"] = json!(pid);
+                }
+                if let Some(cmd) = process_info.get("cmd_line").and_then(|v| v.as_str()) {
+                    log_json["cmd_line"] = json!(cmd);
+                }
+            }
+            
+            // Extract header info (e.g., subject)
+            if let Some(header) = anr_trace["header"].as_object() {
+                if let Some(subject) = header.get("subject").and_then(|v| v.as_str()) {
+                    log_json["subject"] = json!(subject);
+                }
+            }
+            
+            match json_to_log_entry(log_json) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    conversion_errors += 1;
+                    warn!("Crash parser: Failed to convert ANR trace: {}. Trace: {:?}", e, anr_trace);
+                }
+            }
+        }
+    }
+    
+    debug!("Crash parser: Extracted {} total entries ({} tombstones, {} ANR files, {} ANR traces, {} conversion errors)", 
+        entries.len(), tombstone_count, anr_file_count, if anr_trace_count > 0 { 1 } else { 0 }, conversion_errors);
+    
+    if entries.is_empty() {
+        debug!("Crash parser: No log entries extracted");
+        None
+    } else {
+        Some(entries)
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -698,6 +879,37 @@ mod tests {
     }
 
     #[test]
+    fn test_extract_package_entries_with_initiating_package() {
+        // Test that initiatingPackageName, originatingPackageName, and installerPackageName are preserved
+        let output = json!([
+            {
+                "install_logs": [
+                    {
+                        "timestamp": "2025-11-09 09:32:45.123",
+                        "event_type": "START_INSTALL",
+                        "pkg": "com.example.malware",
+                        "initiatingPackageName": "com.google.android.packageinstaller",
+                        "originatingPackageName": "com.sec.android.app.sbrowser",
+                        "installerPackageName": "com.android.vending"
+                    }
+                ]
+            }
+        ]);
+        
+        let entries = extract_package_entries(&output).unwrap();
+        assert_eq!(entries.len(), 1);
+        
+        // Verify the entry contains all the package name fields
+        let entry = &entries[0];
+        let entry_json = serde_json::to_value(entry).unwrap();
+        
+        assert_eq!(entry_json["pkg"], json!("com.example.malware"));
+        assert_eq!(entry_json["initiatingPackageName"], json!("com.google.android.packageinstaller"));
+        assert_eq!(entry_json["originatingPackageName"], json!("com.sec.android.app.sbrowser"));
+        assert_eq!(entry_json["installerPackageName"], json!("com.android.vending"));
+    }
+
+    #[test]
     fn test_extract_process_entries() {
         let output = json!([
             {
@@ -750,5 +962,118 @@ mod tests {
         
         let result = json_to_log_entry(json_value);
         assert!(result.is_ok());
+    }
+
+    #[test]
+    fn test_extract_battery_entries() {
+        // Test new Battery parser format with "apps" and "battery_history"
+        let output = json!({
+            "apps": [
+                {
+                    "uid": 1010123,
+                    "package_name": "\"com.example.app\"",
+                    "cpu_user_time_ms": 1000,
+                    "cpu_system_time_ms": 500,
+                    "foreground_service_time_ms": 60000,
+                    "total_network_bytes": 1024000,
+                    "total_wakelock_time_ms": 5000,
+                    "total_job_count": 10,
+                    "wakelocks": [],
+                    "background_jobs": []
+                },
+                {
+                    "uid": 1010124,
+                    "package_name": "\"com.another.app\"",
+                    "cpu_user_time_ms": 2000,
+                    "cpu_system_time_ms": 800,
+                    "foreground_service_time_ms": 0,
+                    "total_network_bytes": 5000,
+                    "total_wakelock_time_ms": 100,
+                    "total_job_count": 2,
+                    "wakelocks": [],
+                    "background_jobs": []
+                }
+            ],
+            "battery_history": [
+                {
+                    "timestamp": "2025-09-15 18:38:21",
+                    "status": "charging",
+                    "volt": 4200,
+                    "temp": 250,
+                    "charge": 85
+                }
+            ],
+            "version_info": {
+                "sdk_version": 34,
+                "build_number_1": "12345"
+            }
+        });
+        
+        let entries = extract_battery_entries(&output).unwrap();
+        // Should extract 2 apps + 1 history entry = 3 entries
+        assert_eq!(entries.len(), 3);
+    }
+
+    #[test]
+    fn test_extract_crash_entries() {
+        // Test Crash parser format with tombstones, anr_files, and anr_trace
+        let output = json!({
+            "tombstones": [
+                {
+                    "pid": 1234,
+                    "tid": 1235,
+                    "uid": 10100,
+                    "process_name": "com.test.app",
+                    "signal": "SIGSEGV",
+                    "code": "SEGV_MAPERR",
+                    "fault_addr": "0x0000000000000000",
+                    "timestamp": "2025-11-08 17:54:03",
+                    "backtrace": [
+                        {"frame": 0, "pc": "1234", "library": "/system/lib64/test.so"}
+                    ]
+                },
+                {
+                    "pid": 5678,
+                    "tid": 5679,
+                    "uid": 10200,
+                    "process_name": "com.another.app",
+                    "signal": "SIGABRT",
+                    "code": "SI_QUEUE",
+                    "fault_addr": "0x0",
+                    "abort_message": "Test abort",
+                    "backtrace": []
+                }
+            ],
+            "anr_files": {
+                "files": [
+                    {
+                        "filename": "anr_2025-09-15-18-38-21-363",
+                        "size": 239325,
+                        "timestamp": "2025-09-15 18:38",
+                        "owner": "system",
+                        "group": "system",
+                        "permissions": "-rw-------"
+                    }
+                ],
+                "total_size": 236
+            },
+            "anr_trace": {
+                "header": {
+                    "subject": "ANR in com.example.app"
+                },
+                "process_info": {
+                    "pid": "12345",
+                    "cmd_line": "com.example.app"
+                },
+                "threads": [
+                    {"name": "main", "tid": 1, "priority": 5},
+                    {"name": "worker", "tid": 2, "priority": 5}
+                ]
+            }
+        });
+        
+        let entries = extract_crash_entries(&output).unwrap();
+        // Should extract 2 tombstones + 1 ANR file + 1 ANR trace = 4 entries
+        assert_eq!(entries.len(), 4);
     }
 }

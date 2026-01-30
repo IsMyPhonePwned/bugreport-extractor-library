@@ -374,7 +374,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
             match result {
                 Ok(json_output) => {
                     if *parser_type == ParserType::Battery {
-                        battery_stats = Some(serde_json::from_value(json_output.clone())?);
+                        // Battery parser returns an object with "apps" field
+                        if let Some(apps_value) = json_output.get("apps") {
+                            battery_stats = Some(serde_json::from_value(apps_value.clone())?);
+                        }
                     } else if *parser_type == ParserType::Crash {
                         crash_info = Some(serde_json::from_value(json_output.clone())?);
                     }

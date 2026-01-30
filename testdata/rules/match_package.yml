@@ -6,7 +6,7 @@ level: low
 detection:
   selection_suspicious_package:
     pkg:
-      - 'com.google.android.gm'
+      - 'com.google.android.gm.xxxxx'
   condition: selection_suspicious_package
 tags:
   - attack.execution

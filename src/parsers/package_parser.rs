@@ -149,6 +149,58 @@ impl PackageParser {
                                 continue;
                             }
                             
+                            // Skip permission section headers
+                            if next_line.starts_with("runtime permissions:") || next_line.starts_with("declared permissions:") || next_line.starts_with("install permissions:") {
+                                lines_iter.next();
+                                continue;
+                            }
+                            
+                            // IMPORTANT: Parse permissions BEFORE generic key=value to avoid splitting on '=' in permission lines
+                            if next_line.contains(':') && (next_line.contains("granted=") || next_line.contains("prot=")) {
+                                // Parse permission line like "android.permission.POST_NOTIFICATIONS: granted=false, flags=[ POLICY_FIXED|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]"
+                                if let Some((perm_name, rest)) = next_line.split_once(':') {
+                                    let perm_name = perm_name.trim();
+                    let mut perm_value = Map::new();
+                    
+                    // Parse granted value
+                    if let Some(granted_part) = rest.split(',').next() {
+                        if let Some((_, granted_val)) = granted_part.split_once('=') {
+                            let granted = granted_val.trim() == "true";
+                            perm_value.insert("granted".to_string(), json!(granted));
+                        }
+                    }
+                    
+                    // Parse flags if present: flags=[ POLICY_FIXED|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+                    if let Some(flags_part) = rest.split("flags=").nth(1) {
+                        let flags_str = flags_part
+                            .trim_matches(|c| c == '[' || c == ']')
+                            .trim();
+                        if !flags_str.is_empty() {
+                            // Split by | and collect flags
+                            let flags: Vec<&str> = flags_str
+                                .split('|')
+                                .map(|s| s.trim())
+                                .filter(|s| !s.is_empty())
+                                .collect();
+                            perm_value.insert("flags".to_string(), json!(flags));
+                        }
+                    }
+                    
+                    // Store in permissions map with permission name as key
+                    if !user_map.contains_key("permissions") {
+                        user_map.insert("permissions".to_string(), json!(Map::new()));
+                    }
+                    if let Some(perms) = user_map.get_mut("permissions") {
+                        if let Some(perms_map) = perms.as_object_mut() {
+                            perms_map.insert(perm_name.to_string(), json!(perm_value));
+                        }
+                    }
+                                }
+                                lines_iter.next();
+                                continue;
+                            }
+                            
+                            // Parse generic key=value pairs (after permission parsing to avoid conflicts)
                             if let Some((k, v)) = next_line.split_once('=') {
                                 let k = k.trim();
                                 let v = v.trim();
@@ -168,51 +220,6 @@ impl PackageParser {
                                     // Store other fields as-is
                                     user_map.insert(k.to_string(), json!(v));
                                 }
-                            } else if next_line.starts_with("runtime permissions:") || next_line.starts_with("declared permissions:") || next_line.starts_with("install permissions:") {
-                                // Skip permission headers
-                                lines_iter.next();
-                                continue;
-                            } else if next_line.contains("granted=") {
-                                // Parse permission line like "android.permission.POST_NOTIFICATIONS: granted=false, flags=[ POLICY_FIXED|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]"
-                                if let Some((perm_name, rest)) = next_line.split_once(':') {
-                                    let perm_name = perm_name.trim();
-                                    let mut perm_map = Map::new();
-                                    perm_map.insert("permission".to_string(), json!(perm_name));
-                                    
-                                    // Parse granted value
-                                    if let Some(granted_part) = rest.split(',').next() {
-                                        if let Some((_, granted_val)) = granted_part.split_once('=') {
-                                            let granted = granted_val.trim() == "true";
-                                            perm_map.insert("granted".to_string(), json!(granted));
-                                        }
-                                    }
-                                    
-                                    // Parse flags if present: flags=[ POLICY_FIXED|USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
-                                    if let Some(flags_part) = rest.split("flags=").nth(1) {
-                                        let flags_str = flags_part
-                                            .trim_matches(|c| c == '[' || c == ']')
-                                            .trim();
-                                        if !flags_str.is_empty() {
-                                            // Split by | and collect flags
-                                            let flags: Vec<&str> = flags_str
-                                                .split('|')
-                                                .map(|s| s.trim())
-                                                .filter(|s| !s.is_empty())
-                                                .collect();
-                                            perm_map.insert("flags".to_string(), json!(flags));
-                                        }
-                                    }
-                                    
-                                    // Store in a permissions array
-                                    if !user_map.contains_key("permissions") {
-                                        user_map.insert("permissions".to_string(), json!(Vec::<Value>::new()));
-                                    }
-                                    if let Some(perms) = user_map.get_mut("permissions") {
-                                        if let Some(perms_array) = perms.as_array_mut() {
-                                            perms_array.push(json!(perm_map));
-                                        }
-                                    }
-                                }
                             }
                             lines_iter.next();
                         }
@@ -230,6 +237,56 @@ impl PackageParser {
                     }
                 }
                 // If User parsing failed, line was already consumed
+            } else if line.contains(':') && (line.contains("granted=") || line.contains("prot=")) {
+                // This is likely a permission line without a proper header
+                // Format: "android.permission.INTERNET: granted=true" or "perm.NAME: prot=signature"
+                if let Some((perm_name, rest)) = line.split_once(':') {
+                    let perm_name = perm_name.trim();
+                    let rest = rest.trim();
+                    
+                    // Create or get permissions map
+                    if !package_map.contains_key("permissions") {
+                        package_map.insert("permissions".to_string(), json!(Map::new()));
+                    }
+                    
+                    let mut perm_value = Map::new();
+                    
+                    // Parse key=value pairs in the rest
+                    for part in rest.split(',') {
+                        let part = part.trim();
+                        if let Some((k, v)) = part.split_once('=') {
+                            let k = k.trim();
+                            let v = v.trim();
+                            
+                            if k == "granted" {
+                                perm_value.insert("granted".to_string(), json!(v == "true"));
+                            } else if k == "prot" {
+                                perm_value.insert("protection".to_string(), json!(v));
+                            } else if k == "flags" {
+                                // Parse flags if present
+                                let flags_str = v.trim_matches(|c| c == '[' || c == ']');
+                                if !flags_str.is_empty() {
+                                    let flags: Vec<&str> = flags_str
+                                        .split('|')
+                                        .map(|s| s.trim())
+                                        .filter(|s| !s.is_empty())
+                                        .collect();
+                                    perm_value.insert("flags".to_string(), json!(flags));
+                                }
+                            } else {
+                                perm_value.insert(k.to_string(), json!(v));
+                            }
+                        }
+                    }
+                    
+                    // Add to permissions map with permission name as key
+                    if let Some(perms) = package_map.get_mut("permissions") {
+                        if let Some(perms_map) = perms.as_object_mut() {
+                            perms_map.insert(perm_name.to_string(), json!(perm_value));
+                        }
+                    }
+                }
+                lines_iter.next(); // Consume the line
             } else if let Some((key, value)) = line.split_once('=') {
                 // Parse key=value pairs
                 let key = key.trim();
@@ -267,6 +324,16 @@ impl PackageParser {
                     package_map.insert("codePath".to_string(), json!(value));
                 } else if key == "installerPackageName" {
                     package_map.insert("installerPackageName".to_string(), json!(value));
+                } else if key == "initiatingPackageName" {
+                    // Skip if value is "null" string
+                    if value != "null" {
+                        package_map.insert("initiatingPackageName".to_string(), json!(value));
+                    }
+                } else if key == "originatingPackageName" {
+                    // Skip if value is "null" string
+                    if value != "null" {
+                        package_map.insert("originatingPackageName".to_string(), json!(value));
+                    }
                 } else if key == "firstInstallTime" {
                     package_map.insert("firstInstallTime".to_string(), json!(value));
                 } else if key == "lastUpdateTime" {
@@ -290,12 +357,76 @@ impl PackageParser {
                 }
                 lines_iter.next(); // Consume the line
             } else if line.starts_with("declared permissions:") || line.starts_with("install permissions:") {
-                // Skip permission section headers
-                lines_iter.next();
+                // Parse permission section at package level
+                let permission_type = if line.starts_with("declared") { "declared" } else { "install" };
+                lines_iter.next(); // Consume the header
+                
+                // Create or get permissions map
+                if !package_map.contains_key("permissions") {
+                    package_map.insert("permissions".to_string(), json!(Map::new()));
+                }
+                
+                // Parse permission entries until we hit a non-permission line
+                while let Some(perm_line) = lines_iter.peek() {
+                    let perm_line_trimmed = perm_line.trim();
+                    
+                    // Stop if we hit a section boundary or non-indented line
+                    if !perm_line_trimmed.starts_with(' ') || perm_line_trimmed.starts_with("User ") {
+                        break;
+                    }
+                    
+                    // Parse permission lines like:
+                    // "  android.permission.INTERNET: granted=true"
+                    // "  com.bitchat.droid.PERMISSION: prot=signature"
+                    if let Some((perm_name, rest)) = perm_line_trimmed.split_once(':') {
+                        let perm_name = perm_name.trim();
+                        let rest = rest.trim();
+                        
+                        let mut perm_value = Map::new();
+                        perm_value.insert("type".to_string(), json!(permission_type));
+                        
+                        // Parse key=value pairs in the rest
+                        for part in rest.split(',') {
+                            let part = part.trim();
+                            if let Some((k, v)) = part.split_once('=') {
+                                let k = k.trim();
+                                let v = v.trim();
+                                
+                                if k == "granted" {
+                                    perm_value.insert("granted".to_string(), json!(v == "true"));
+                                } else if k == "prot" {
+                                    perm_value.insert("protection".to_string(), json!(v));
+                                } else if k == "flags" {
+                                    // Parse flags if present
+                                    let flags_str = v.trim_matches(|c| c == '[' || c == ']');
+                                    if !flags_str.is_empty() {
+                                        let flags: Vec<&str> = flags_str
+                                            .split('|')
+                                            .map(|s| s.trim())
+                                            .filter(|s| !s.is_empty())
+                                            .collect();
+                                        perm_value.insert("flags".to_string(), json!(flags));
+                                    }
+                                } else {
+                                    perm_value.insert(k.to_string(), json!(v));
+                                }
+                            }
+                        }
+                        
+                        // Add to permissions map with permission name as key
+                        if let Some(perms) = package_map.get_mut("permissions") {
+                            if let Some(perms_map) = perms.as_object_mut() {
+                                perms_map.insert(perm_name.to_string(), json!(perm_value));
+                            }
+                        }
+                    }
+                    
+                    lines_iter.next(); // Consume the permission line
+                }
                 continue;
             } else if line.contains(':') && !line.contains('=') {
-                // Might be a permission line or other structured data
-                // Skip for now or handle as needed
+                // Might be other structured data
+                // Skip for now
                 lines_iter.next();
             } else {
                 // Unknown line format, skip it
@@ -630,6 +761,18 @@ impl PackageParser {
                         log_map.insert("versionCode".to_string(), json!(vc));
                     } else if next_line_trimmed.starts_with("Request from") {
                          log_map.insert("request_from".to_string(), json!(Self::extract_braced_value(next_line_trimmed, "Request from")));
+                    } else if next_line_trimmed.starts_with("initiatingPackageName=") {
+                        if let Some(value) = next_line_trimmed.strip_prefix("initiatingPackageName=") {
+                            log_map.insert("initiatingPackageName".to_string(), json!(value.trim()));
+                        }
+                    } else if next_line_trimmed.starts_with("originatingPackageName=") {
+                        if let Some(value) = next_line_trimmed.strip_prefix("originatingPackageName=") {
+                            log_map.insert("originatingPackageName".to_string(), json!(value.trim()));
+                        }
+                    } else if next_line_trimmed.starts_with("installerPackageName=") {
+                        if let Some(value) = next_line_trimmed.strip_prefix("installerPackageName=") {
+                            log_map.insert("installerPackageName".to_string(), json!(value.trim()));
+                        }
                     } else {
                         break; // Not part of this block
                     }
@@ -1391,9 +1534,9 @@ Packages:
         
         // Verify permissions for User 0 (if present)
         if let Some(perms0) = user0.get("permissions") {
-            let perms0_array = perms0.as_array().unwrap();
-            assert!(perms0_array.len() >= 1);
-            if let Some(post_notif) = perms0_array.iter().find(|p| p["permission"] == "android.permission.POST_NOTIFICATIONS") {
+            let perms0_map = perms0.as_object().unwrap();
+            assert!(perms0_map.len() >= 1);
+            if let Some(post_notif) = perms0_map.get("android.permission.POST_NOTIFICATIONS") {
                 assert_eq!(post_notif["granted"], false);
             }
         }
@@ -1410,9 +1553,9 @@ Packages:
         
         // Verify permissions for User 10 with flags (if present)
         if let Some(perms10) = user10.get("permissions") {
-            let perms10_array = perms10.as_array().unwrap();
-            assert!(perms10_array.len() >= 1);
-            if let Some(post_notif10) = perms10_array.iter().find(|p| p["permission"] == "android.permission.POST_NOTIFICATIONS") {
+            let perms10_map = perms10.as_object().unwrap();
+            assert!(perms10_map.len() >= 1);
+            if let Some(post_notif10) = perms10_map.get("android.permission.POST_NOTIFICATIONS") {
                 assert_eq!(post_notif10["granted"], true);
                 if let Some(flags) = post_notif10.get("flags") {
                     let flags_array = flags.as_array().unwrap();
@@ -1422,7 +1565,7 @@ Packages:
                     assert!(flags_array.iter().any(|f| f.as_str() == Some("USER_SENSITIVE_WHEN_DENIED")));
                 }
             }
-            if let Some(fine_loc) = perms10_array.iter().find(|p| p["permission"] == "android.permission.ACCESS_FINE_LOCATION") {
+            if let Some(fine_loc) = perms10_map.get("android.permission.ACCESS_FINE_LOCATION") {
                 assert_eq!(fine_loc["granted"], false);
                 assert!(fine_loc.get("flags").is_some());
             }
@@ -1500,5 +1643,239 @@ Packages:
             .filter(|log| log.get("pkg").is_none())
             .count();
         assert!(logs_without_pkg >= 1, "Service block should have logs without package names");
+    }
+
+    #[test]
+    fn test_parse_install_log_with_initiating_package() {
+        // Test that initiatingPackageName and related fields are properly extracted from install logs
+        let data = b"
+-------------------------------------------------------------------------------
+DUMP OF SERVICE package:
+Service host process PID: 1486
+2025-11-09 09:32:45.123: START INSTALL PACKAGE: observer{987654321}
+          stagedDir{/data/app/vmdl123456.tmp}
+          pkg{com.example.testapp}
+          versionCode{42}
+          Request from{com.android.vending}
+          initiatingPackageName=com.google.android.packageinstaller
+          originatingPackageName=com.sec.android.app.sbrowser
+          installerPackageName=com.android.vending
+2025-11-09 09:32:45.500: result of install: 1{987654321}
+-------------------------------------------------------------------------------
+        ";
+        
+        let parser = PackageParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        
+        // Verify the result has the expected structure
+        let sections = result.as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        
+        let service_block = &sections[0];
+        let install_logs = service_block["install_logs"].as_array().unwrap();
+        assert_eq!(install_logs.len(), 2); // START_INSTALL + INSTALL_RESULT
+        
+        // Find the START_INSTALL log entry
+        let start_install_log = install_logs.iter()
+            .find(|log| log["event_type"].as_str() == Some("START_INSTALL"))
+            .expect("Should have START_INSTALL log entry");
+        
+        // Verify all fields are present
+        assert_eq!(start_install_log["pkg"].as_str(), Some("com.example.testapp"));
+        assert_eq!(start_install_log["versionCode"].as_u64(), Some(42));
+        assert_eq!(start_install_log["request_from"].as_str(), Some("com.android.vending"));
+        assert_eq!(start_install_log["initiatingPackageName"].as_str(), Some("com.google.android.packageinstaller"));
+        assert_eq!(start_install_log["originatingPackageName"].as_str(), Some("com.sec.android.app.sbrowser"));
+        assert_eq!(start_install_log["installerPackageName"].as_str(), Some("com.android.vending"));
+    }
+
+    #[test]
+    fn test_parse_package_metadata_with_initiating_package() {
+        // Test that initiatingPackageName and related fields are extracted from package metadata (Packages section)
+        let data = b"
+-------------------------------------------------------------------------------
+DUMP OF SERVICE package:
+Packages:
+  Package [com.bitchat.droid] (672e433):
+    appId=10333
+    pkg=Package{2e4e3f0 com.bitchat.droid}
+    codePath=/data/app/~~test/com.bitchat.droid
+    resourcePath=/data/app/~~test/com.bitchat.droid
+    timeStamp=2025-08-26 13:40:46
+    lastUpdateTime=2025-08-26 13:40:57
+    installerPackageName=com.google.android.packageinstaller
+    installerPackageUid=10078
+    initiatingPackageName=com.google.android.packageinstaller
+    originatingPackageName=com.sec.android.app.sbrowser
+    packageSource=4
+    declared permissions:
+      com.bitchat.droid.PERMISSION: prot=signature
+-------------------------------------------------------------------------------
+        ";
+        
+        let parser = PackageParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        
+        // Verify the result has the expected structure
+        let sections = result.as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        
+        let packages = sections[0]["packages"].as_array().unwrap();
+        assert_eq!(packages.len(), 1);
+        
+        let package = &packages[0];
+        
+        // Verify package metadata fields
+        assert_eq!(package["package_name"].as_str(), Some("com.bitchat.droid"));
+        assert_eq!(package["appId"].as_u64(), Some(10333));
+        assert_eq!(package["installerPackageName"].as_str(), Some("com.google.android.packageinstaller"));
+        assert_eq!(package["initiatingPackageName"].as_str(), Some("com.google.android.packageinstaller"));
+        assert_eq!(package["originatingPackageName"].as_str(), Some("com.sec.android.app.sbrowser"));
+        // packageSource is stored as string by the generic field handler
+        assert_eq!(package["packageSource"].as_str(), Some("4"));
+    }
+
+    #[test]
+    fn test_parse_permissions_without_headers() {
+        // Test that permissions without section headers are parsed correctly,
+        // not as malformed keys like "android.permission.X: granted"
+        let data = b"
+-------------------------------------------------------------------------------
+DUMP OF SERVICE package:
+Packages:
+  Package [com.test.app] (abc123):
+    appId=10001
+    android.permission.INTERNET: granted=true
+    android.permission.ACCESS_NETWORK_STATE: granted=true
+    com.test.app.CUSTOM_PERM: prot=signature
+    versionCode=1 minSdk=21 targetSdk=33
+    User 0: installed=true
+      installReason=0
+      android.permission.CAMERA: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED]
+      android.permission.LOCATION: granted=true
+      firstInstallTime=2025-01-01 10:00:00
+        ";
+        let parser = PackageParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        
+        assert!(result.is_array());
+        let results_array = result.as_array().unwrap();
+        let packages_section = results_array.iter()
+            .find(|item| item.get("packages").is_some())
+            .expect("Should have packages section");
+        
+        let packages = packages_section["packages"].as_array().unwrap();
+        assert_eq!(packages.len(), 1);
+        let package = &packages[0];
+        
+        // Verify package-level permissions are properly structured, not flat keys
+        assert!(package.get("android.permission.INTERNET: granted").is_none(), 
+                "Should not have malformed permission key at package level");
+        assert!(package.get("android.permission.ACCESS_NETWORK_STATE: granted").is_none(),
+                "Should not have malformed permission key at package level");
+        
+        // Verify permissions map exists and contains the permissions
+        let perms = package.get("permissions").expect("Should have permissions map");
+        let perms_map = perms.as_object().unwrap();
+        assert!(perms_map.len() >= 2, "Should have at least 2 permissions");
+        
+        // Check INTERNET permission
+        let internet_perm = perms_map.get("android.permission.INTERNET")
+            .expect("Should have INTERNET permission");
+        assert_eq!(internet_perm["granted"], true);
+        
+        // Check custom permission with prot
+        let custom_perm = perms_map.get("com.test.app.CUSTOM_PERM")
+            .expect("Should have custom permission");
+        assert_eq!(custom_perm["protection"], "signature");
+        
+        // Verify user-level permissions are also properly structured
+        let users = package["users"].as_array().unwrap();
+        let user0 = &users[0];
+        
+        assert!(user0.get("android.permission.CAMERA: granted").is_none(),
+                "Should not have malformed permission key at user level");
+        
+        let user_perms = user0.get("permissions").expect("User should have permissions map");
+        let user_perms_map = user_perms.as_object().unwrap();
+        assert!(user_perms_map.len() >= 2, "User should have at least 2 permissions");
+        
+        // Check CAMERA permission with flags
+        let camera_perm = user_perms_map.get("android.permission.CAMERA")
+            .expect("Should have CAMERA permission");
+        assert_eq!(camera_perm["granted"], false);
+        let flags = camera_perm["flags"].as_array().unwrap();
+        assert!(flags.contains(&json!("USER_SENSITIVE_WHEN_GRANTED")));
+    }
+
+    #[test]
+    fn test_parse_user_permissions() {
+        // Test that user runtime permissions are correctly parsed into structured format
+        let data = b"
+-------------------------------------------------------------------------------
+DUMP OF SERVICE package:
+Packages:
+  Package [com.example.app] (abc123):
+    appId=10200
+    User 0: ceDataInode=122761 installed=true hidden=false suspended=false stopped=false
+      installReason=4
+      firstInstallTime=2025-08-26 13:40:57
+      gids=[3003]
+      runtime permissions:
+        android.permission.POST_NOTIFICATIONS: granted=false, flags=[ USER_SENSITIVE_WHEN_GRANTED|USER_SENSITIVE_WHEN_DENIED]
+        android.permission.ACCESS_FINE_LOCATION: granted=true, flags=[ POLICY_FIXED|USER_SENSITIVE_WHEN_GRANTED]
+        android.permission.CAMERA: granted=true
+-------------------------------------------------------------------------------
+        ";
+        
+        let parser = PackageParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        
+        // Verify the result structure
+        let sections = result.as_array().unwrap();
+        assert_eq!(sections.len(), 1);
+        
+        let packages = sections[0]["packages"].as_array().unwrap();
+        assert_eq!(packages.len(), 1);
+        
+        let package = &packages[0];
+        let users = package["users"].as_array().unwrap();
+        assert_eq!(users.len(), 1);
+        
+        let user = &users[0];
+        assert_eq!(user["user_id"], json!(0));
+        assert_eq!(user["installReason"], json!(4));
+        
+        // Verify permissions array exists and is structured correctly
+        assert!(user.get("permissions").is_some(), "User should have 'permissions' map");
+        let permissions = user["permissions"].as_object().unwrap();
+        assert_eq!(permissions.len(), 3, "Should have 3 parsed permissions");
+        
+        // Check POST_NOTIFICATIONS permission
+        let perm1 = permissions.get("android.permission.POST_NOTIFICATIONS")
+            .expect("Should have POST_NOTIFICATIONS permission");
+        assert_eq!(perm1["granted"], json!(false));
+        let flags1 = perm1["flags"].as_array().unwrap();
+        assert_eq!(flags1.len(), 2);
+        assert!(flags1.contains(&json!("USER_SENSITIVE_WHEN_GRANTED")));
+        assert!(flags1.contains(&json!("USER_SENSITIVE_WHEN_DENIED")));
+        
+        // Check ACCESS_FINE_LOCATION permission
+        let perm2 = permissions.get("android.permission.ACCESS_FINE_LOCATION")
+            .expect("Should have ACCESS_FINE_LOCATION permission");
+        assert_eq!(perm2["granted"], json!(true));
+        let flags2 = perm2["flags"].as_array().unwrap();
+        assert_eq!(flags2.len(), 2);
+        assert!(flags2.contains(&json!("POLICY_FIXED")));
+        
+        // Check CAMERA permission (no flags)
+        let perm3 = permissions.get("android.permission.CAMERA")
+            .expect("Should have CAMERA permission");
+        assert_eq!(perm3["granted"], json!(true));
+        assert!(perm3.get("flags").is_none() || perm3["flags"].as_array().unwrap().is_empty());
+        
+        // Ensure no malformed keys like "android.permission.X: granted"
+        assert!(user.get("android.permission.POST_NOTIFICATIONS: granted").is_none(),
+            "Should not have malformed permission keys");
     }
 }
