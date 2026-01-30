@@ -16,6 +16,7 @@ pub mod device_policy_parser;
 pub mod adb_parser;
 pub mod authentication_parser;
 pub mod vpn_parser;
+pub mod privacy_parser;
 
 pub use header_parser::HeaderParser;
 pub use memory_parser::MemoryParser;
@@ -31,6 +32,7 @@ pub use device_policy_parser::DevicePolicyParser;
 pub use adb_parser::AdbParser;
 pub use authentication_parser::AuthenticationParser;
 pub use vpn_parser::VpnParser;
+pub use privacy_parser::PrivacyParser;
 
 /// The core trait for all parsers.
 /// Any new parser must implement this trait.
@@ -57,7 +59,8 @@ pub enum ParserType {
     DevicePolicy,
     Adb,
     Authentication,
-    Vpn
+    Vpn,
+    Privacy
 }
 
 /// WASM-compatible parser type (without clap::ValueEnum)
@@ -77,6 +80,7 @@ pub enum ParserType {
     DevicePolicy,
     Adb,
     Authentication,
-    Vpn
+    Vpn,
+    Privacy
 }
 

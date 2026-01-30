@@ -180,6 +180,7 @@ fn format_parser_name(parser_type: &ParserType) -> &str {
         ParserType::Adb => "ADB",
         ParserType::Authentication => "Authentication",
         ParserType::Vpn => "VPN",
+        ParserType::Privacy => "Privacy",
     }
 }
 
