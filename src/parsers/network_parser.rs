@@ -250,6 +250,277 @@ impl NetworkParser {
             (addr_port.to_string(), None)
         }
     }
+
+    /// Parse WiFi scanner service dump section
+    /// Extracts scan events, PNO settings, and nearby WiFi networks
+    fn parse_wifiscanner_section(content: &str) -> Option<Value> {
+        const WIFISCANNER_START: &str = "DUMP OF SERVICE wifiscanner:";
+        
+        if let Some(start_idx) = content.find(WIFISCANNER_START) {
+            let section = &content[start_idx..];
+            
+            // Find the end of this section
+            let end_idx = if let Some(end) = section.find("--------- ") {
+                if let Some(was_duration) = section[end..].find("was the duration of") {
+                    end + was_duration
+                } else {
+                    section.len()
+                }
+            } else {
+                section.len()
+            };
+            
+            let section = &section[..end_idx];
+            let mut wifi_data = Map::new();
+            
+            // Parse saved networks from PNO settings
+            if let Some(saved_networks) = Self::parse_pno_networks(section) {
+                wifi_data.insert("saved_networks".to_string(), json!(saved_networks));
+            }
+            
+            // Parse latest scan results (nearby networks)
+            if let Some(scan_results) = Self::parse_wifi_scan_results(section) {
+                wifi_data.insert("scan_results".to_string(), json!(scan_results));
+            }
+            
+            // Parse scan events (which apps are scanning)
+            if let Some(scan_events) = Self::parse_wifi_scan_events(section) {
+                wifi_data.insert("scan_events".to_string(), json!(scan_events));
+            }
+            
+            if !wifi_data.is_empty() {
+                return Some(json!(wifi_data));
+            }
+        }
+        
+        None
+    }
+
+    /// Extract saved WiFi networks from PNO settings
+    /// Format: networks:[ "Ananas","Coco","Freebox-5CE31C","noisette ","A Lab","YOTEL", ]
+    fn parse_pno_networks(section: &str) -> Option<Vec<String>> {
+        use regex::Regex;
+        
+        // Use regex to extract all saved networks from PNO settings
+        let re = Regex::new(r#"networks:\[\s*([^\]]+)\]"#).ok()?;
+        let mut all_networks = std::collections::HashSet::new();
+        
+        for caps in re.captures_iter(section) {
+            if let Some(networks_str) = caps.get(1) {
+                let networks_str = networks_str.as_str();
+                
+                // Parse comma-separated quoted strings
+                for network in networks_str.split(',') {
+                    let network = network.trim();
+                    // Extract quoted SSID
+                    if let Some(start_quote) = network.find('"') {
+                        if let Some(end_quote) = network[start_quote + 1..].find('"') {
+                            let ssid = &network[start_quote + 1..start_quote + 1 + end_quote];
+                            if !ssid.is_empty() {
+                                all_networks.insert(ssid.to_string());
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        
+        if all_networks.is_empty() {
+            None
+        } else {
+            let mut networks: Vec<String> = all_networks.into_iter().collect();
+            networks.sort();
+            Some(networks)
+        }
+    }
+
+    /// Parse WiFi scan results table
+    /// Format: BSSID Frequency RSSI Age(sec) SSID Flags
+    /// Example: da:fa:50:8a:16:31 5240 -17(0:-19/1:-21) 442,265 Fraise [WPA2-PSK-CCMP-128][RSN-PSK-CCMP-128][ESS]
+    /// Parses all scan result sections: Latest scan results, Latest native scan results, Latest native pno scan results
+    fn parse_wifi_scan_results(section: &str) -> Option<Map<String, Value>> {
+        use regex::Regex;
+        
+        // Regex to parse WiFi scan result lines - capture everything including flags
+        // BSSID: xx:xx:xx:xx:xx:xx, Frequency: digits, RSSI: -XX(...), Age: ..., SSID: anything, Flags: [...]
+        let re = Regex::new(
+            r"(?xm)
+            ([0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2}:[0-9a-f]{2})\s+ # BSSID
+            (\d+)\s+                                 # Frequency
+            (-?\d+)\([^\)]+\)\s+                     # RSSI with details
+            ([^\s]+)\s+                              # Age
+            (.+)$                                    # Everything else (SSID and flags) - $ matches end of line in multiline mode
+            "
+        ).ok()?;
+        
+        let mut result_map = Map::new();
+        
+        // Parse all three sections: Latest scan results, Latest native scan results, Latest native pno scan results
+        let sections_to_parse = vec![
+            ("latest_scan_results", "Latest scan results:"),
+            ("native_scan_results", "Latest native scan results:"),
+            ("native_pno_scan_results", "Latest native pno scan results:"),
+        ];
+        
+        for (section_key, section_marker) in sections_to_parse {
+            if let Some(scan_start) = section.find(section_marker) {
+                let scan_section = &section[scan_start..];
+                
+                // Find the end of this section (next section or end marker)
+                let section_end = scan_section
+                    .find("Latest ")
+                    .and_then(|idx| {
+                        // Make sure it's a different section (not the current one)
+                        if idx > section_marker.len() {
+                            Some(idx)
+                        } else {
+                            scan_section[idx + section_marker.len()..]
+                                .find("Latest ")
+                                .map(|i| i + idx + section_marker.len())
+                        }
+                    })
+                    .or_else(|| scan_section.find("--------- "))
+                    .unwrap_or(scan_section.len());
+                
+                let limited_section = &scan_section[..section_end];
+                let mut networks = Vec::new();
+                
+                for caps in re.captures_iter(limited_section) {
+                    let bssid = caps.get(1)?.as_str();
+                    let frequency = caps.get(2)?.as_str().parse::<u32>().ok()?;
+                    let rssi = caps.get(3)?.as_str().parse::<i32>().ok()?;
+                    let age = caps.get(4)?.as_str();
+                    let rest = caps.get(5)?.as_str().trim();
+                    
+                    // Split SSID and flags
+                    // The SSID is everything before the first [, flags are everything after
+                    let (ssid, flags_part) = if let Some(bracket_pos) = rest.find('[') {
+                        (rest[..bracket_pos].trim(), Some(&rest[bracket_pos..]))
+                    } else {
+                        (rest, None)
+                    };
+                    
+                    // Extract security flags
+                    let mut flags = Vec::new();
+                    if let Some(flags_str) = flags_part {
+                        let flag_re = Regex::new(r"\[([^\]]+)\]").ok()?;
+                        for flag_cap in flag_re.captures_iter(flags_str) {
+                            if let Some(flag) = flag_cap.get(1) {
+                                flags.push(flag.as_str().to_string());
+                            }
+                        }
+                    }
+                    
+                    let mut network_info = Map::new();
+                    network_info.insert("bssid".to_string(), json!(bssid));
+                    network_info.insert("frequency".to_string(), json!(frequency));
+                    network_info.insert("rssi".to_string(), json!(rssi));
+                    network_info.insert("age".to_string(), json!(age));
+                    if !ssid.is_empty() {
+                        network_info.insert("ssid".to_string(), json!(ssid));
+                    }
+                    if !flags.is_empty() {
+                        network_info.insert("security".to_string(), json!(flags));
+                    }
+                    
+                    networks.push(json!(network_info));
+                }
+                
+                if !networks.is_empty() {
+                    result_map.insert(section_key.to_string(), json!(networks));
+                }
+            }
+        }
+        
+        if result_map.is_empty() {
+            None
+        } else {
+            Some(result_map)
+        }
+    }
+
+    /// Parse WiFi scan events to see which apps are requesting location via WiFi scanning
+    /// Format: timestamp - event: ClientInfo[uid=X, package=Y, attributionTag=Z, ...],WorkSource{...}
+    fn parse_wifi_scan_events(section: &str) -> Option<Vec<Value>> {
+        use regex::Regex;
+        
+        // Look for the log section
+        let log_start = section.find("WifiScanningService - Log Begin")?;
+        let log_end = section[log_start..].find("WifiScanningService - Log End")?;
+        let log_section = &section[log_start..log_start + log_end];
+        
+        // Regex to parse scan request lines
+        let re = Regex::new(
+            r"(?x)
+            (\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d+)\s+-\s+  # Timestamp
+            (start\s+scan|start\s+pno\s+scan|singleScanResults|addSingleScanRequest|addHwPnoScanRequest)  # Event type
+            .*?
+            ClientInfo\[uid=(\d+),\s*package=([^,\]]+)(?:,\s*attributionTag=([^,\]]+))? # ClientInfo
+            "
+        ).ok()?;
+        
+        let mut events = Vec::new();
+        let mut seen_events = std::collections::HashSet::new();
+        
+        for caps in re.captures_iter(log_section) {
+            let timestamp = caps.get(1)?.as_str();
+            let event_type = caps.get(2)?.as_str().trim();
+            let uid = caps.get(3)?.as_str().parse::<u32>().ok()?;
+            let package = caps.get(4)?.as_str();
+            let attribution_tag = caps.get(5).map(|m| m.as_str());
+            
+            // Create a unique key for this scan event (to avoid duplicates)
+            let event_key = format!("{}|{}|{}", uid, package, event_type);
+            
+            // Only add unique combinations
+            if seen_events.insert(event_key) {
+                let mut event = Map::new();
+                event.insert("timestamp".to_string(), json!(timestamp));
+                event.insert("event_type".to_string(), json!(event_type));
+                event.insert("uid".to_string(), json!(uid));
+                if package != "null" {
+                    event.insert("package".to_string(), json!(package));
+                }
+                if let Some(attr) = attribution_tag {
+                    if attr != "null" {
+                        event.insert("attribution_tag".to_string(), json!(attr));
+                    }
+                }
+                
+                // Extract WorkSource if present (shows which app requested the scan)
+                if let Some(line) = caps.get(0) {
+                    let line_str = line.as_str();
+                    if let Some(ws_start) = line_str.find("WorkSource{") {
+                        if let Some(ws_end) = line_str[ws_start..].find('}') {
+                            let ws_content = &line_str[ws_start + 11..ws_start + ws_end];
+                            let ws_parts: Vec<&str> = ws_content.split_whitespace().collect();
+                            
+                            if !ws_parts.is_empty() {
+                                let mut work_source = Map::new();
+                                if let Ok(ws_uid) = ws_parts[0].parse::<u32>() {
+                                    work_source.insert("uid".to_string(), json!(ws_uid));
+                                }
+                                if ws_parts.len() > 1 {
+                                    work_source.insert("package".to_string(), json!(ws_parts[1]));
+                                }
+                                if !work_source.is_empty() {
+                                    event.insert("work_source".to_string(), json!(work_source));
+                                }
+                            }
+                        }
+                    }
+                }
+                
+                events.push(json!(event));
+            }
+        }
+        
+        if events.is_empty() {
+            None
+        } else {
+            Some(events)
+        }
+    }
 }
 
 impl Parser for NetworkParser {
@@ -1120,6 +1391,11 @@ impl Parser for NetworkParser {
             result.insert("network_stats".to_string(), json!(stats_json));
         }
 
+        // Parse WiFi scanner information
+        if let Some(wifi_scanner_data) = Self::parse_wifiscanner_section(&content) {
+            result.insert("wifi_scanner".to_string(), wifi_scanner_data);
+        }
+
         Ok(json!(result))
     }
 }
@@ -1417,5 +1693,74 @@ Inter-|   Receive                                                |  Transmit
         assert!(!result.as_object().unwrap().contains_key("sockets"));
         assert!(!result.as_object().unwrap().contains_key("interfaces"));
         assert!(!result.as_object().unwrap().contains_key("network_stats"));
+    }
+
+    #[test]
+    fn test_parse_wifi_scanner_all_sections() {
+        // Test parsing all WiFi scan result sections
+        let data = br#"
+DUMP OF SERVICE wifiscanner:
+WifiScanningService - Log Begin ----
+2026-01-23T15:42:28.660361 - singleScanResults listener: ClientInfo[uid=1000, package=android, attributionTag=null, android.net.wifi.WifiScanner$ServiceListener@a7ed97a],results=8
+2026-01-23T15:42:28.660595 - singleScanResults listener: ClientInfo[uid=10282, package=com.google.android.gms, attributionTag=network_location_provider, android.net.wifi.IWifiScannerListener$Stub$Proxy@9698963],results=8
+WifiScanningService - Log End ----
+
+Latest scan results:
+    BSSID              Frequency      RSSI           Age(sec)     SSID                                 Flags
+  aa:bb:cc:dd:ee:ff       2412    -45(0:-47/1:-49)   100,200    TestNetwork1                      [WPA2-PSK-CCMP-128][RSN-PSK-CCMP-128][ESS]
+  11:22:33:44:55:66       5240    -60(0:-62/1:-64)   150,300    TestNetwork2                      [WPA2-PSK-CCMP-128][RSN-PSK-CCMP-128][ESS]
+
+Latest native scan results:
+    BSSID              Frequency      RSSI           Age(sec)     SSID                                 Flags
+  aa:bb:cc:dd:ee:ff       2412    -48(0:-50/1:-52)   110,220    TestNetwork1                      [WPA2-PSK-CCMP-128][RSN-PSK-CCMP-128][ESS]
+
+Latest native pno scan results:
+    BSSID              Frequency      RSSI           Age(sec)     SSID                                 Flags
+  77:88:99:aa:bb:cc       5180    -55(0:-57/1:-59)   >1000.0    TestNetwork3                      [WPA2-PSK-CCMP-128][RSN-PSK-CCMP-128][ESS]
+  11:22:33:44:55:66       5240    -65(0:-67/1:-69)   >1000.0    TestNetwork2                      [WPA2-PSK-CCMP-128][RSN-PSK-CCMP-128][ESS]
+
+--------- 0.103s was the duration of dumpsys wifiscanner
+        "#;
+        
+        let parser = NetworkParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        
+        assert!(result["wifi_scanner"].is_object(), "wifi_scanner should be an object");
+        let wifi_scanner = result["wifi_scanner"].as_object().unwrap();
+        
+        assert!(wifi_scanner.contains_key("scan_results"), "should contain scan_results");
+        let scan_results = wifi_scanner["scan_results"].as_object()
+            .expect("scan_results should be an object");
+        
+        // Check all three sections are parsed
+        assert!(scan_results.contains_key("latest_scan_results"), "should contain latest_scan_results");
+        assert!(scan_results.contains_key("native_scan_results"), "should contain native_scan_results");
+        assert!(scan_results.contains_key("native_pno_scan_results"), "should contain native_pno_scan_results");
+        
+        // Verify latest_scan_results
+        let latest = scan_results["latest_scan_results"].as_array().unwrap();
+        assert_eq!(latest.len(), 2);
+        let network1 = &latest[0];
+        assert_eq!(network1["bssid"], "aa:bb:cc:dd:ee:ff");
+        assert_eq!(network1["frequency"], 2412);
+        assert_eq!(network1["rssi"], -45);
+        assert_eq!(network1["ssid"], "TestNetwork1");
+        assert!(network1["security"].as_array().unwrap().contains(&json!("WPA2-PSK-CCMP-128")));
+        
+        // Verify native_scan_results
+        let native = scan_results["native_scan_results"].as_array().unwrap();
+        assert_eq!(native.len(), 1);
+        assert_eq!(native[0]["bssid"], "aa:bb:cc:dd:ee:ff");
+        assert_eq!(native[0]["ssid"], "TestNetwork1");
+        
+        // Verify native_pno_scan_results
+        let native_pno = scan_results["native_pno_scan_results"].as_array().unwrap();
+        assert_eq!(native_pno.len(), 2);
+        let pno_network1 = &native_pno[0];
+        assert_eq!(pno_network1["bssid"], "77:88:99:aa:bb:cc");
+        assert_eq!(pno_network1["frequency"], 5180);
+        assert_eq!(pno_network1["rssi"], -55);
+        assert_eq!(pno_network1["ssid"], "TestNetwork3");
+        assert_eq!(pno_network1["age"], ">1000.0");
     }
 }
