@@ -1,0 +1,49 @@
+# Example: covers network_stats fields
+# Fields: event_type, rx_bytes, tx_bytes, rx_packets, tx_packets, network_type,
+#         wifi_network_name, subscriber_id, rat_type, metered, default_network
+title: Example Network Stats (All Network Stats Fields)
+id: example-13-network-stats
+status: experimental
+description: Example rule covering all Sigma fields from network stats entries.
+logsource:
+  product: android
+  category: network
+detection:
+  selection:
+    event_type: network_stats
+  selection_rx:
+    event_type: network_stats
+    rx_bytes: 2000000
+  selection_tx:
+    event_type: network_stats
+    tx_bytes: 800000
+  selection_rx_packets:
+    event_type: network_stats
+    rx_packets: 10000
+  selection_tx_packets:
+    event_type: network_stats
+    tx_packets: 5000
+  selection_network_type:
+    event_type: network_stats
+    network_type: 'WIFI'
+  selection_wifi_name:
+    event_type: network_stats
+    wifi_network_name: 'MyNetwork'
+  selection_subscriber:
+    event_type: network_stats
+    subscriber_id|contains: '310'
+  selection_rat:
+    event_type: network_stats
+    rat_type: 'COMBINED'
+  selection_metered:
+    event_type: network_stats
+    metered: false
+  selection_default:
+    event_type: network_stats
+    default_network: true
+  condition: selection or selection_rx or selection_tx or selection_rx_packets or selection_tx_packets or selection_network_type or selection_wifi_name or selection_subscriber or selection_rat or selection_metered or selection_default
+level: low
+tags:
+  - example
+  - network
+  - stats

@@ -1,0 +1,51 @@
+# Example: covers Bluetooth parser fields
+# Fields: event_type, mac_address, masked_address, identity_address, name, transport_type,
+#         device_class, connected, services, manufacturer, device_type, link_type
+title: Example Bluetooth (All Bluetooth Fields)
+id: example-07-bluetooth
+status: experimental
+description: Example rule covering all Sigma fields from Bluetooth device entries.
+logsource:
+  product: android
+  category: bluetooth
+detection:
+  selection:
+    event_type: bluetooth_device
+  selection_mac:
+    event_type: bluetooth_device
+    mac_address|contains: ':'
+  selection_masked:
+    event_type: bluetooth_device
+    masked_address|contains: 'XX:XX'
+  selection_identity:
+    event_type: bluetooth_device
+    identity_address|contains: ':'
+  selection_name:
+    event_type: bluetooth_device
+    name|contains: 'Shokz'
+  selection_transport:
+    event_type: bluetooth_device
+    transport_type: 'DUAL'
+  selection_class:
+    event_type: bluetooth_device
+    device_class: '0x240404'
+  selection_connected:
+    event_type: bluetooth_device
+    connected: true
+  selection_services:
+    event_type: bluetooth_device
+    services|contains: 'AudioSink'
+  selection_manufacturer:
+    event_type: bluetooth_device
+    manufacturer: 688
+  selection_device_type:
+    event_type: bluetooth_device
+    device_type: 3
+  selection_link_type:
+    event_type: bluetooth_device
+    link_type: 1
+  condition: selection or selection_mac or selection_masked or selection_identity or selection_name or selection_transport or selection_class or selection_connected or selection_services or selection_manufacturer or selection_device_type or selection_link_type
+level: low
+tags:
+  - example
+  - bluetooth

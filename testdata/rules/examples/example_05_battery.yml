@@ -1,0 +1,60 @@
+# Example: covers Battery parser fields
+# battery_app_stats: event_type, uid, package_name, cpu_user_time_ms, cpu_system_time_ms,
+#   foreground_service_time_ms, total_network_bytes, total_wakelock_time_ms, total_job_count
+# battery_history: event_type, timestamp, status, volt, temp, charge
+title: Example Battery (All Battery Fields)
+id: example-05-battery
+status: experimental
+description: Example rule covering all Sigma fields from battery app stats and history.
+logsource:
+  product: android
+  category: battery
+detection:
+  app_selection:
+    event_type: battery_app_stats
+  app_uid:
+    event_type: battery_app_stats
+    uid: 1010123
+  app_package:
+    event_type: battery_app_stats
+    package_name|contains: 'com.example'
+  app_cpu_user:
+    event_type: battery_app_stats
+    cpu_user_time_ms: 1000
+  app_cpu_system:
+    event_type: battery_app_stats
+    cpu_system_time_ms: 500
+  app_fg_service:
+    event_type: battery_app_stats
+    foreground_service_time_ms: 60000
+  app_network:
+    event_type: battery_app_stats
+    total_network_bytes: 1024000
+  app_wakelock:
+    event_type: battery_app_stats
+    total_wakelock_time_ms: 5000
+  app_jobs:
+    event_type: battery_app_stats
+    total_job_count: 10
+  hist_selection:
+    event_type: battery_history
+  hist_timestamp:
+    event_type: battery_history
+    timestamp|contains: '2025'
+  hist_status:
+    event_type: battery_history
+    status: 'charging'
+  hist_volt:
+    event_type: battery_history
+    volt: 4200
+  hist_temp:
+    event_type: battery_history
+    temp: 250
+  hist_charge:
+    event_type: battery_history
+    charge: 85
+  condition: app_selection or app_uid or app_package or app_cpu_user or app_cpu_system or app_fg_service or app_network or app_wakelock or app_jobs or hist_selection or hist_timestamp or hist_status or hist_volt or hist_temp or hist_charge
+level: low
+tags:
+  - example
+  - battery

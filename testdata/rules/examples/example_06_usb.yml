@@ -1,0 +1,41 @@
+# Example: covers USB parser fields
+# usb_port: event_type, port_id, connected, mode
+# usb_device: event_type, vendor_id, product_id, product_name, manufacturer
+title: Example USB (All USB Fields)
+id: example-06-usb
+status: experimental
+description: Example rule covering all Sigma fields from USB port and device entries.
+logsource:
+  product: android
+  category: usb
+detection:
+  port_selection:
+    event_type: usb_port
+  port_id:
+    event_type: usb_port
+    port_id: 'USB1'
+  port_connected:
+    event_type: usb_port
+    connected: true
+  port_mode:
+    event_type: usb_port
+    mode: 'host'
+  device_selection:
+    event_type: usb_device
+  device_vendor:
+    event_type: usb_device
+    vendor_id: '0x1234'
+  device_product:
+    event_type: usb_device
+    product_id: '0x5678'
+  device_product_name:
+    event_type: usb_device
+    product_name|contains: 'Storage'
+  device_manufacturer:
+    event_type: usb_device
+    manufacturer|contains: 'Vendor'
+  condition: port_selection or port_id or port_connected or port_mode or device_selection or device_vendor or device_product or device_product_name or device_manufacturer
+level: low
+tags:
+  - example
+  - usb

@@ -1,0 +1,43 @@
+# Example: covers Tombstone backtrace frame fields
+# Fields: event_type, backtrace_frame_index, frame, pc, library, function, offset, build_id, raw_line
+# (plus tombstone context: pid, tid, uid, process_name, signal, code, fault_addr, timestamp, etc.)
+title: Example Tombstone Backtrace (All Backtrace Frame Fields)
+id: example-09-crash-backtrace
+status: experimental
+description: Example rule covering all Sigma fields from tombstone backtrace frame entries.
+logsource:
+  product: android
+  category: crash
+detection:
+  selection:
+    event_type: tombstone_backtrace
+  selection_frame_index:
+    event_type: tombstone_backtrace
+    backtrace_frame_index: 0
+  selection_frame:
+    event_type: tombstone_backtrace
+    frame: 0
+  selection_pc:
+    event_type: tombstone_backtrace
+    pc|contains: '1de20c'
+  selection_library:
+    event_type: tombstone_backtrace
+    library|contains: 'libimagecodec'
+  selection_function:
+    event_type: tombstone_backtrace
+    function|contains: 'processArea'
+  selection_offset:
+    event_type: tombstone_backtrace
+    offset: '552'
+  selection_build_id:
+    event_type: tombstone_backtrace
+    build_id|contains: '995700b6'
+  selection_raw_line:
+    event_type: tombstone_backtrace
+    raw_line|contains: 'pc '
+  condition: selection or selection_frame_index or selection_frame or selection_pc or selection_library or selection_function or selection_offset or selection_build_id or selection_raw_line
+level: low
+tags:
+  - example
+  - crash
+  - tombstone_backtrace

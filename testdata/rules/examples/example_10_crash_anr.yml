@@ -1,0 +1,47 @@
+# Example: covers ANR event fields
+# anr_file: event_type, crash_type, filename, size, timestamp, owner
+# anr_trace: event_type, crash_type, pid, cmd_line, subject, thread_count
+title: Example ANR (All ANR File and Trace Fields)
+id: example-10-crash-anr
+status: experimental
+description: Example rule covering all Sigma fields from ANR file and ANR trace entries.
+logsource:
+  product: android
+  category: crash
+detection:
+  file_selection:
+    event_type: anr_file
+    crash_type: anr
+  file_filename:
+    event_type: anr_file
+    filename|contains: 'anr_'
+  file_size:
+    event_type: anr_file
+    size: 239325
+  file_timestamp:
+    event_type: anr_file
+    timestamp|contains: '2025'
+  file_owner:
+    event_type: anr_file
+    owner: 'system'
+  trace_selection:
+    event_type: anr_trace
+    crash_type: anr
+  trace_pid:
+    event_type: anr_trace
+    pid: '12345'
+  trace_cmd:
+    event_type: anr_trace
+    cmd_line|contains: 'com.example'
+  trace_subject:
+    event_type: anr_trace
+    subject|contains: 'ANR'
+  trace_threads:
+    event_type: anr_trace
+    thread_count: 2
+  condition: file_selection or file_filename or file_size or file_timestamp or file_owner or trace_selection or trace_pid or trace_cmd or trace_subject or trace_threads
+level: low
+tags:
+  - example
+  - crash
+  - anr

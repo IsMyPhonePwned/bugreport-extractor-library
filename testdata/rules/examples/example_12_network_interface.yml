@@ -1,0 +1,36 @@
+# Example: covers network_interface fields
+# Fields: event_type, name, ip_addresses, flags, mtu, rx_bytes, tx_bytes
+title: Example Network Interface (All Interface Fields)
+id: example-12-network-interface
+status: experimental
+description: Example rule covering all Sigma fields from network interface entries.
+logsource:
+  product: android
+  category: network
+detection:
+  selection:
+    event_type: network_interface
+  selection_name:
+    event_type: network_interface
+    name: 'wlan0'
+  selection_ips:
+    event_type: network_interface
+    ip_addresses|contains: '192.168'
+  selection_flags:
+    event_type: network_interface
+    flags|contains: 'UP'
+  selection_mtu:
+    event_type: network_interface
+    mtu: 1500
+  selection_rx:
+    event_type: network_interface
+    rx_bytes: 1000000
+  selection_tx:
+    event_type: network_interface
+    tx_bytes: 500000
+  condition: selection or selection_name or selection_ips or selection_flags or selection_mtu or selection_rx or selection_tx
+level: low
+tags:
+  - example
+  - network
+  - interface

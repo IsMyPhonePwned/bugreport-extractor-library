@@ -1,0 +1,63 @@
+# Example: covers WiFi scanner fields
+# wifi_saved_network: event_type, ssid
+# wifi_scan_result: event_type, scan_section, bssid, frequency, rssi, age, ssid, security
+# wifi_scan_event: event_type, timestamp, scan_event_type, uid, package, attribution_tag, work_source
+title: Example WiFi Scanner (All WiFi Fields)
+id: example-14-wifi
+status: experimental
+description: Example rule covering all Sigma fields from WiFi saved networks, scan results, and scan events.
+logsource:
+  product: android
+  category: network
+detection:
+  saved_selection:
+    event_type: wifi_saved_network
+  saved_ssid:
+    event_type: wifi_saved_network
+    ssid: 'HomeWiFi'
+  scan_selection:
+    event_type: wifi_scan_result
+  scan_section:
+    event_type: wifi_scan_result
+    scan_section: 'Latest scan results'
+  scan_bssid:
+    event_type: wifi_scan_result
+    bssid|contains: ':'
+  scan_frequency:
+    event_type: wifi_scan_result
+    frequency: 5240
+  scan_rssi:
+    event_type: wifi_scan_result
+    rssi: -17
+  scan_age:
+    event_type: wifi_scan_result
+    age: '442'
+  scan_ssid:
+    event_type: wifi_scan_result
+    ssid|contains: 'Fraise'
+  scan_security:
+    event_type: wifi_scan_result
+    security|contains: 'WPA2'
+  event_selection:
+    event_type: wifi_scan_event
+  event_timestamp:
+    event_type: wifi_scan_event
+    timestamp|contains: '2025'
+  event_scan_type:
+    event_type: wifi_scan_event
+    scan_event_type: 'scan'
+  event_uid:
+    event_type: wifi_scan_event
+    uid: 10100
+  event_package:
+    event_type: wifi_scan_event
+    package|contains: 'com.example'
+  event_attribution:
+    event_type: wifi_scan_event
+    attribution_tag|contains: 'tag'
+  condition: saved_selection or saved_ssid or scan_selection or scan_section or scan_bssid or scan_frequency or scan_rssi or scan_age or scan_ssid or scan_security or event_selection or event_timestamp or event_scan_type or event_uid or event_package or event_attribution
+level: low
+tags:
+  - example
+  - network
+  - wifi

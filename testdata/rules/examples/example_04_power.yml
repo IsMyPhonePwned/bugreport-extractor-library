@@ -1,0 +1,38 @@
+# Example: covers Power parser fields
+# power_event: event_type, timestamp, power_event_type, flags, details
+# reset_reason: event_type, reason, stack_trace
+title: Example Power (All Power Fields)
+id: example-04-power
+status: experimental
+description: Example rule covering all Sigma fields from power events and reset reasons.
+logsource:
+  product: android
+  category: power
+detection:
+  power_selection:
+    event_type: power_event
+  power_timestamp:
+    event_type: power_event
+    timestamp|contains: '2025'
+  power_event_type:
+    event_type: power_event
+    power_event_type: 'wake_lock'
+  power_flags:
+    event_type: power_event
+    flags|contains: '0x'
+  power_details:
+    event_type: power_event
+    details|contains: 'wake'
+  reset_selection:
+    event_type: reset_reason
+  reset_reason:
+    event_type: reset_reason
+    reason|contains: 'kernel'
+  reset_stack:
+    event_type: reset_reason
+    stack_trace|contains: 'at '
+  condition: power_selection or power_timestamp or power_event_type or power_flags or power_details or reset_selection or reset_reason or reset_stack
+level: low
+tags:
+  - example
+  - power

@@ -1,0 +1,61 @@
+# Example: covers network_socket fields
+# Fields: event_type, protocol, local_address, remote_address, local_ip, local_port,
+#         remote_ip, remote_port, state, uid, inode, recv_q, send_q, socket_key, additional_info
+title: Example Network Socket (All Socket Fields)
+id: example-11-network-socket
+status: experimental
+description: Example rule covering all Sigma fields from network socket entries.
+logsource:
+  product: android
+  category: network
+detection:
+  selection:
+    event_type: network_socket
+  selection_protocol:
+    event_type: network_socket
+    protocol: 'tcp'
+  selection_local_addr:
+    event_type: network_socket
+    local_address|contains: '127.0.0.1'
+  selection_remote_addr:
+    event_type: network_socket
+    remote_address|contains: '443'
+  selection_local_ip:
+    event_type: network_socket
+    local_ip: '127.0.0.1'
+  selection_local_port:
+    event_type: network_socket
+    local_port: 12345
+  selection_remote_ip:
+    event_type: network_socket
+    remote_ip: '10.0.0.1'
+  selection_remote_port:
+    event_type: network_socket
+    remote_port: 443
+  selection_state:
+    event_type: network_socket
+    state: 'ESTABLISHED'
+  selection_uid:
+    event_type: network_socket
+    uid: 10100
+  selection_inode:
+    event_type: network_socket
+    inode: 123456
+  selection_recv_q:
+    event_type: network_socket
+    recv_q: 0
+  selection_send_q:
+    event_type: network_socket
+    send_q: 0
+  selection_socket_key:
+    event_type: network_socket
+    socket_key|contains: ':'
+  selection_additional:
+    event_type: network_socket
+    additional_info|contains: 'timer'
+  condition: selection or selection_protocol or selection_local_addr or selection_remote_addr or selection_local_ip or selection_local_port or selection_remote_ip or selection_remote_port or selection_state or selection_uid or selection_inode or selection_recv_q or selection_send_q or selection_socket_key or selection_additional
+level: low
+tags:
+  - example
+  - network
+  - socket

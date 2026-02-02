@@ -1,0 +1,47 @@
+# Example: covers Package METADATA fields (packages section)
+# Fields: package_name, appId, uid, firstInstallTime, lastUpdateTime, timeStamp, codePath,
+#         resourcePath, targetSdkVersion, versionCode, versionName, packageSource,
+#         installerPackageName, initiatingPackageName, originatingPackageName
+title: Example Package Metadata (All Package Fields)
+id: example-02-package-metadata
+status: experimental
+description: Example rule covering all Sigma fields from package metadata entries.
+logsource:
+  product: android
+  category: package_install
+detection:
+  selection_name:
+    package_name: 'com.example.app'
+  selection_uid:
+    uid: 10333
+  selection_appid:
+    appId: 10333
+  selection_code_path:
+    codePath|contains: '/data/app/'
+  selection_resource:
+    resourcePath|contains: '/data/app/'
+  selection_first_install:
+    firstInstallTime|contains: '2025'
+  selection_last_update:
+    lastUpdateTime|contains: '2025'
+  selection_timestamp:
+    timeStamp|contains: '2025'
+  selection_target_sdk:
+    targetSdkVersion: 34
+  selection_version_code:
+    versionCode: '1.2.3'
+  selection_version_name:
+    versionName: '1.2.3'
+  selection_package_source:
+    packageSource: '4'
+  selection_installer:
+    installerPackageName: 'com.android.vending'
+  selection_initiating:
+    initiatingPackageName: 'com.google.android.packageinstaller'
+  selection_originating:
+    originatingPackageName|contains: 'sbrowser'
+  condition: selection_name or selection_uid or selection_appid or selection_code_path or selection_resource or selection_first_install or selection_last_update or selection_timestamp or selection_target_sdk or selection_version_code or selection_version_name or selection_package_source or selection_installer or selection_initiating or selection_originating
+level: low
+tags:
+  - example
+  - package_metadata

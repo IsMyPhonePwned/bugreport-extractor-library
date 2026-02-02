@@ -1,0 +1,40 @@
+# Example: covers Package INSTALL event fields
+# Fields: event_type, timestamp, pkg, versionCode, observer, stagedDir, request_from,
+#         initiatingPackageName, originatingPackageName, installerPackageName
+title: Example Package Install Event (All Install Fields)
+id: example-01-package-install
+status: experimental
+description: Example rule covering all Sigma fields from package install events.
+logsource:
+  product: android
+  category: package_install
+detection:
+  selection:
+    event_type: START_INSTALL
+    pkg: 'com.example.app'
+  selection_timestamp:
+    event_type: START_INSTALL
+    timestamp|contains: '2025'
+  selection_observer:
+    event_type: START_INSTALL
+    observer: '123456789'
+  selection_staged:
+    event_type: START_INSTALL
+    stagedDir|contains: '/data/app/'
+  selection_request_from:
+    event_type: START_INSTALL
+    request_from: 'com.android.vending'
+  selection_initiating:
+    event_type: START_INSTALL
+    initiatingPackageName: 'com.google.android.packageinstaller'
+  selection_originating:
+    event_type: START_INSTALL
+    originatingPackageName|contains: 'browser'
+  selection_installer:
+    event_type: START_INSTALL
+    installerPackageName: 'com.android.vending'
+  condition: selection or selection_timestamp or selection_observer or selection_staged or selection_request_from or selection_initiating or selection_originating or selection_installer
+level: low
+tags:
+  - example
+  - package_install

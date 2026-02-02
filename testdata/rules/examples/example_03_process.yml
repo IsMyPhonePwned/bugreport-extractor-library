@@ -1,0 +1,29 @@
+# Example: covers Process parser fields
+# Fields: event_type, pid, user, cmd, thread_count
+title: Example Process (All Process Fields)
+id: example-03-process
+status: experimental
+description: Example rule covering all Sigma fields from process entries.
+logsource:
+  product: android
+  category: process
+detection:
+  selection:
+    event_type: process_running
+  selection_pid:
+    event_type: process_running
+    pid: 1234
+  selection_user:
+    event_type: process_running
+    user: 'u0_a123'
+  selection_cmd:
+    event_type: process_running
+    cmd|contains: 'com.example.app'
+  selection_threads:
+    event_type: process_running
+    thread_count: 12
+  condition: selection or selection_pid or selection_user or selection_cmd or selection_threads
+level: low
+tags:
+  - example
+  - process

@@ -1,0 +1,50 @@
+# Example: covers Tombstone-level crash fields
+# Fields: event_type, crash_type, pid, tid, uid, process_name, signal, code, fault_addr,
+#         timestamp, abort_message, backtrace_frames
+title: Example Tombstone (All Tombstone Fields)
+id: example-08-crash-tombstone
+status: experimental
+description: Example rule covering all Sigma fields from native crash (tombstone) entries.
+logsource:
+  product: android
+  category: crash
+detection:
+  selection:
+    event_type: native_crash
+    crash_type: tombstone
+  selection_pid:
+    event_type: native_crash
+    pid: 1234
+  selection_tid:
+    event_type: native_crash
+    tid: 1235
+  selection_uid:
+    event_type: native_crash
+    uid: 10100
+  selection_process:
+    event_type: native_crash
+    process_name|contains: 'com.example'
+  selection_signal:
+    event_type: native_crash
+    signal: 'SIGSEGV'
+  selection_code:
+    event_type: native_crash
+    code: 'SEGV_MAPERR'
+  selection_fault_addr:
+    event_type: native_crash
+    fault_addr|contains: '0x'
+  selection_timestamp:
+    event_type: native_crash
+    timestamp|contains: '2025'
+  selection_abort:
+    event_type: native_crash
+    abort_message|contains: 'abort'
+  selection_backtrace_frames:
+    event_type: native_crash
+    backtrace_frames: 12
+  condition: selection or selection_pid or selection_tid or selection_uid or selection_process or selection_signal or selection_code or selection_fault_addr or selection_timestamp or selection_abort or selection_backtrace_frames
+level: low
+tags:
+  - example
+  - crash
+  - tombstone
