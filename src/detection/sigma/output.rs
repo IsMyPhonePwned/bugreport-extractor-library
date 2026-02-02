@@ -59,7 +59,7 @@ pub fn output_match(rule_match: &RuleMatch, format: &str) {
             
             // Display matched log details if available
             // Serialize matched_log to JSON and display it
-            if let Ok(log_json) = serde_json::to_value(&rule_match.matched_log) {
+            if let Ok(log_json) = serde_json::to_value(&*rule_match.matched_log) {
                 // Try to extract common fields
                 if let Some(obj) = log_json.as_object() {
                     if !obj.is_empty() {
