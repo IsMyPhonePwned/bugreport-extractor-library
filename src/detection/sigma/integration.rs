@@ -85,6 +85,7 @@ fn extract_entries_for_parser(parser_type: &ParserType, output: &Value) -> Optio
         ParserType::Battery => extract_battery_entries(output),
         ParserType::Usb => extract_usb_entries(output),
         ParserType::Crash => extract_crash_entries(output),
+        ParserType::Bluetooth => extract_bluetooth_entries(output),
         // Header and Memory parsers don't produce security-relevant events
         _ => {
             debug!("{:?} parser: No Sigma extraction function implemented", parser_type);
@@ -638,6 +639,95 @@ fn extract_usb_entries(output: &Value) -> Option<Vec<LogEntry>> {
     }
 }
 
+/// Extracts log entries from BluetoothParser output
+/// BluetoothParser returns an object with "devices" array; each device has mac_address, masked_address,
+/// name, transport_type, device_class, services, connected, manufacturer, device_type, link_type
+fn extract_bluetooth_entries(output: &Value) -> Option<Vec<LogEntry>> {
+    let mut entries = Vec::new();
+    let mut conversion_errors = 0;
+
+    let devices = match output.get("devices").and_then(|v| v.as_array()) {
+        Some(arr) => {
+            debug!("Bluetooth parser: Found {} devices in output", arr.len());
+            arr
+        }
+        None => {
+            debug!("Bluetooth parser: No 'devices' array found in output");
+            return None;
+        }
+    };
+
+    for (idx, device) in devices.iter().enumerate() {
+        let mut log_json = json!({
+            "event_type": "bluetooth_device"
+        });
+
+        if let Some(v) = device.get("mac_address").and_then(|v| v.as_str()) {
+            log_json["mac_address"] = json!(v);
+        }
+        if let Some(v) = device.get("masked_address").and_then(|v| v.as_str()) {
+            log_json["masked_address"] = json!(v);
+        }
+        if let Some(v) = device.get("identity_address").and_then(|v| v.as_str()) {
+            log_json["identity_address"] = json!(v);
+        }
+        if let Some(v) = device.get("name").and_then(|v| v.as_str()) {
+            log_json["name"] = json!(v);
+        }
+        if let Some(v) = device.get("transport_type").and_then(|v| v.as_str()) {
+            log_json["transport_type"] = json!(v);
+        }
+        if let Some(v) = device.get("device_class").and_then(|v| v.as_str()) {
+            log_json["device_class"] = json!(v);
+        }
+        if let Some(connected) = device.get("connected").and_then(|v| v.as_bool()) {
+            log_json["connected"] = json!(connected);
+        }
+        if let Some(services) = device.get("services").and_then(|v| v.as_array()) {
+            let svc: Vec<&str> = services.iter().filter_map(|v| v.as_str()).collect();
+            if !svc.is_empty() {
+                log_json["services"] = json!(svc);
+            }
+        }
+        if let Some(v) = device.get("manufacturer").and_then(|v| v.as_u64()) {
+            log_json["manufacturer"] = json!(v);
+        }
+        if let Some(v) = device.get("device_type").and_then(|v| v.as_u64()) {
+            log_json["device_type"] = json!(v);
+        }
+        if let Some(v) = device.get("link_type").and_then(|v| v.as_u64()) {
+            log_json["link_type"] = json!(v);
+        }
+
+        match json_to_log_entry(log_json) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                conversion_errors += 1;
+                warn!(
+                    "Bluetooth parser: Failed to convert device {}: {}. Device: {:?}",
+                    idx + 1,
+                    e,
+                    device
+                );
+            }
+        }
+    }
+
+    debug!(
+        "Bluetooth parser: Extracted {} entries from {} devices ({} conversion errors)",
+        entries.len(),
+        devices.len(),
+        conversion_errors
+    );
+
+    if entries.is_empty() {
+        debug!("Bluetooth parser: No log entries extracted");
+        None
+    } else {
+        Some(entries)
+    }
+}
+
 /// Extracts log entries from CrashParser output
 fn extract_crash_entries(output: &Value) -> Option<Vec<LogEntry>> {
     let mut entries = Vec::new();
@@ -1118,5 +1208,46 @@ mod tests {
         }).collect();
         assert_eq!(backtrace_entries.len(), 1);
         assert_eq!(backtrace_entries[0].fields.get("library").and_then(|v: &serde_json::Value| v.as_str()), Some("/system/lib64/test.so"));
+    }
+
+    #[test]
+    fn test_extract_bluetooth_entries() {
+        let output = json!({
+            "devices": [
+                {
+                    "mac_address": "a0:0c:e2:1e:53:25",
+                    "masked_address": "XX:XX:XX:XX:53:25",
+                    "name": "OpenFit 2+ by Shokz",
+                    "transport_type": "DUAL",
+                    "device_class": "0x240404",
+                    "services": ["SPP", "HSP", "AudioSink"],
+                    "connected": false,
+                    "manufacturer": 688,
+                    "device_type": 3
+                },
+                {
+                    "masked_address": "XX:XX:XX:XX:91:F7",
+                    "name": "Instinct 3 - 45mm Tac",
+                    "transport_type": "LE",
+                    "device_class": "0x000704",
+                    "services": [],
+                    "connected": true
+                }
+            ]
+        });
+        let entries = extract_bluetooth_entries(&output).unwrap();
+        assert_eq!(entries.len(), 2);
+        assert_eq!(
+            entries[0].fields.get("event_type").and_then(|v: &serde_json::Value| v.as_str()),
+            Some("bluetooth_device")
+        );
+        assert_eq!(
+            entries[0].fields.get("name").and_then(|v: &serde_json::Value| v.as_str()),
+            Some("OpenFit 2+ by Shokz")
+        );
+        assert_eq!(
+            entries[1].fields.get("connected").and_then(|v: &serde_json::Value| v.as_bool()),
+            Some(true)
+        );
     }
 }
