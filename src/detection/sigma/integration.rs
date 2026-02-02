@@ -699,11 +699,48 @@ fn extract_crash_entries(output: &Value) -> Option<Vec<LogEntry>> {
                 log_json["backtrace_frames"] = json!(backtrace.len());
             }
             
-            match json_to_log_entry(log_json) {
+            match json_to_log_entry(log_json.clone()) {
                 Ok(entry) => entries.push(entry),
                 Err(e) => {
                     conversion_errors += 1;
                     warn!("Crash parser: Failed to convert tombstone {}: {}. Tombstone: {:?}", idx + 1, e, tombstone);
+                }
+            }
+            
+            // Emit one log entry per backtrace frame so Sigma rules can match on library, function, build_id, etc.
+            if let Some(backtrace) = tombstone["backtrace"].as_array() {
+                for (frame_idx, frame) in backtrace.iter().enumerate() {
+                    let mut frame_log = log_json.clone();
+                    frame_log["event_type"] = json!("tombstone_backtrace");
+                    frame_log["backtrace_frame_index"] = json!(frame_idx);
+                    if let Some(v) = frame.get("frame").and_then(|v| v.as_i64()) {
+                        frame_log["frame"] = json!(v);
+                    }
+                    if let Some(v) = frame.get("pc").and_then(|v| v.as_str()) {
+                        frame_log["pc"] = json!(v);
+                    }
+                    if let Some(v) = frame.get("library").and_then(|v| v.as_str()) {
+                        frame_log["library"] = json!(v);
+                    }
+                    if let Some(v) = frame.get("function").and_then(|v| v.as_str()) {
+                        frame_log["function"] = json!(v);
+                    }
+                    if let Some(v) = frame.get("offset").and_then(|v| v.as_str()) {
+                        frame_log["offset"] = json!(v);
+                    }
+                    if let Some(v) = frame.get("build_id").and_then(|v| v.as_str()) {
+                        frame_log["build_id"] = json!(v);
+                    }
+                    if let Some(v) = frame.get("raw_line").and_then(|v| v.as_str()) {
+                        frame_log["raw_line"] = json!(v);
+                    }
+                    match json_to_log_entry(frame_log) {
+                        Ok(entry) => entries.push(entry),
+                        Err(e) => {
+                            conversion_errors += 1;
+                            warn!("Crash parser: Failed to convert backtrace frame {} of tombstone {}: {}", frame_idx, idx + 1, e);
+                        }
+                    }
                 }
             }
         }
@@ -1073,7 +1110,13 @@ mod tests {
         });
         
         let entries = extract_crash_entries(&output).unwrap();
-        // Should extract 2 tombstones + 1 ANR file + 1 ANR trace = 4 entries
-        assert_eq!(entries.len(), 4);
+        // Should extract 2 tombstones + 1 backtrace frame (first tombstone has 1 frame) + 1 ANR file + 1 ANR trace = 5 entries
+        assert_eq!(entries.len(), 5);
+        // One entry should be a tombstone_backtrace with library
+        let backtrace_entries: Vec<_> = entries.iter().filter(|e| {
+            e.fields.get("event_type").and_then(|v: &serde_json::Value| v.as_str()) == Some("tombstone_backtrace")
+        }).collect();
+        assert_eq!(backtrace_entries.len(), 1);
+        assert_eq!(backtrace_entries[0].fields.get("library").and_then(|v: &serde_json::Value| v.as_str()), Some("/system/lib64/test.so"));
     }
 }
