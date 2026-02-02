@@ -86,6 +86,7 @@ fn extract_entries_for_parser(parser_type: &ParserType, output: &Value) -> Optio
         ParserType::Usb => extract_usb_entries(output),
         ParserType::Crash => extract_crash_entries(output),
         ParserType::Bluetooth => extract_bluetooth_entries(output),
+        ParserType::Network => extract_network_entries(output),
         // Header and Memory parsers don't produce security-relevant events
         _ => {
             debug!("{:?} parser: No Sigma extraction function implemented", parser_type);
@@ -728,6 +729,257 @@ fn extract_bluetooth_entries(output: &Value) -> Option<Vec<LogEntry>> {
     }
 }
 
+/// Extracts log entries from NetworkParser output
+/// NetworkParser returns an object with optional "sockets", "interfaces", "network_stats", "wifi_scanner"
+fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
+    let mut entries = Vec::new();
+    let mut conversion_errors = 0;
+
+    // Sockets: protocol, local_address, remote_address, local_ip, local_port, remote_ip, remote_port, state, uid, inode, ...
+    if let Some(sockets) = output.get("sockets").and_then(|v| v.as_array()) {
+        debug!("Network parser: Found {} sockets", sockets.len());
+        for (idx, sock) in sockets.iter().enumerate() {
+            let mut log_json = json!({ "event_type": "network_socket" });
+            if let Some(v) = sock.get("protocol").and_then(|v| v.as_str()) {
+                log_json["protocol"] = json!(v);
+            }
+            if let Some(v) = sock.get("local_address").and_then(|v| v.as_str()) {
+                log_json["local_address"] = json!(v);
+            }
+            if let Some(v) = sock.get("remote_address").and_then(|v| v.as_str()) {
+                log_json["remote_address"] = json!(v);
+            }
+            if let Some(v) = sock.get("local_ip").and_then(|v| v.as_str()) {
+                log_json["local_ip"] = json!(v);
+            }
+            if let Some(v) = sock.get("local_port").and_then(|v| v.as_u64()) {
+                log_json["local_port"] = json!(v);
+            }
+            if let Some(v) = sock.get("remote_ip").and_then(|v| v.as_str()) {
+                log_json["remote_ip"] = json!(v);
+            }
+            if let Some(v) = sock.get("remote_port").and_then(|v| v.as_u64()) {
+                log_json["remote_port"] = json!(v);
+            }
+            if let Some(v) = sock.get("state").and_then(|v| v.as_str()) {
+                log_json["state"] = json!(v);
+            }
+            if let Some(v) = sock.get("uid").and_then(|v| v.as_u64()) {
+                log_json["uid"] = json!(v);
+            }
+            if let Some(v) = sock.get("inode").and_then(|v| v.as_u64()) {
+                log_json["inode"] = json!(v);
+            }
+            if let Some(v) = sock.get("recv_q").and_then(|v| v.as_u64()) {
+                log_json["recv_q"] = json!(v);
+            }
+            if let Some(v) = sock.get("send_q").and_then(|v| v.as_u64()) {
+                log_json["send_q"] = json!(v);
+            }
+            if let Some(v) = sock.get("socket_key").and_then(|v| v.as_str()) {
+                log_json["socket_key"] = json!(v);
+            }
+            if let Some(v) = sock.get("additional_info").and_then(|v| v.as_str()) {
+                log_json["additional_info"] = json!(v);
+            }
+            match json_to_log_entry(log_json) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    conversion_errors += 1;
+                    warn!("Network parser: Failed to convert socket {}: {}", idx + 1, e);
+                }
+            }
+        }
+    }
+
+    // Interfaces: name, ip_addresses, flags, mtu, rx_bytes, tx_bytes
+    if let Some(interfaces) = output.get("interfaces").and_then(|v| v.as_array()) {
+        debug!("Network parser: Found {} interfaces", interfaces.len());
+        for (idx, iface) in interfaces.iter().enumerate() {
+            let mut log_json = json!({ "event_type": "network_interface" });
+            if let Some(v) = iface.get("name").and_then(|v| v.as_str()) {
+                log_json["name"] = json!(v);
+            }
+            if let Some(arr) = iface.get("ip_addresses").and_then(|v| v.as_array()) {
+                let ips: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                if !ips.is_empty() {
+                    log_json["ip_addresses"] = json!(ips);
+                }
+            }
+            if let Some(arr) = iface.get("flags").and_then(|v| v.as_array()) {
+                let flags: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                if !flags.is_empty() {
+                    log_json["flags"] = json!(flags);
+                }
+            }
+            if let Some(v) = iface.get("mtu").and_then(|v| v.as_u64()) {
+                log_json["mtu"] = json!(v);
+            }
+            if let Some(v) = iface.get("rx_bytes").and_then(|v| v.as_u64()) {
+                log_json["rx_bytes"] = json!(v);
+            }
+            if let Some(v) = iface.get("tx_bytes").and_then(|v| v.as_u64()) {
+                log_json["tx_bytes"] = json!(v);
+            }
+            match json_to_log_entry(log_json) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    conversion_errors += 1;
+                    warn!("Network parser: Failed to convert interface {}: {}", idx + 1, e);
+                }
+            }
+        }
+    }
+
+    // Network stats: rx_bytes, tx_bytes, network_type, wifi_network_name, subscriber_id, rat_type, metered, default_network
+    if let Some(stats) = output.get("network_stats").and_then(|v| v.as_array()) {
+        debug!("Network parser: Found {} network_stats entries", stats.len());
+        for (idx, stat) in stats.iter().enumerate() {
+            let mut log_json = json!({ "event_type": "network_stats" });
+            if let Some(v) = stat.get("rx_bytes").and_then(|v| v.as_u64()) {
+                log_json["rx_bytes"] = json!(v);
+            }
+            if let Some(v) = stat.get("tx_bytes").and_then(|v| v.as_u64()) {
+                log_json["tx_bytes"] = json!(v);
+            }
+            if let Some(v) = stat.get("rx_packets").and_then(|v| v.as_u64()) {
+                log_json["rx_packets"] = json!(v);
+            }
+            if let Some(v) = stat.get("tx_packets").and_then(|v| v.as_u64()) {
+                log_json["tx_packets"] = json!(v);
+            }
+            if let Some(v) = stat.get("network_type").and_then(|v| v.as_str()) {
+                log_json["network_type"] = json!(v);
+            }
+            if let Some(v) = stat.get("wifi_network_name").and_then(|v| v.as_str()) {
+                log_json["wifi_network_name"] = json!(v);
+            }
+            if let Some(v) = stat.get("subscriber_id").and_then(|v| v.as_str()) {
+                log_json["subscriber_id"] = json!(v);
+            }
+            if let Some(v) = stat.get("rat_type").and_then(|v| v.as_str()) {
+                log_json["rat_type"] = json!(v);
+            }
+            if let Some(v) = stat.get("metered").and_then(|v| v.as_bool()) {
+                log_json["metered"] = json!(v);
+            }
+            if let Some(v) = stat.get("default_network").and_then(|v| v.as_bool()) {
+                log_json["default_network"] = json!(v);
+            }
+            match json_to_log_entry(log_json) {
+                Ok(entry) => entries.push(entry),
+                Err(e) => {
+                    conversion_errors += 1;
+                    warn!("Network parser: Failed to convert network_stat {}: {}", idx + 1, e);
+                }
+            }
+        }
+    }
+
+    // WiFi scanner: saved_networks (array of SSIDs), scan_results (section -> networks), scan_events
+    if let Some(wifi) = output.get("wifi_scanner") {
+        if let Some(saved) = wifi.get("saved_networks").and_then(|v| v.as_array()) {
+            for (idx, v) in saved.iter().enumerate() {
+                let ssid = v.as_str().unwrap_or("");
+                let log_json = json!({
+                    "event_type": "wifi_saved_network",
+                    "ssid": ssid
+                });
+                match json_to_log_entry(log_json) {
+                    Ok(entry) => entries.push(entry),
+                    Err(e) => {
+                        conversion_errors += 1;
+                        warn!("Network parser: Failed to convert saved_network {}: {}", idx + 1, e);
+                    }
+                }
+            }
+        }
+        if let Some(scan_results) = wifi.get("scan_results").and_then(|v| v.as_object()) {
+            for (section_name, networks_value) in scan_results {
+                if let Some(networks) = networks_value.as_array() {
+                    for (idx, net) in networks.iter().enumerate() {
+                        let mut log_json = json!({
+                            "event_type": "wifi_scan_result",
+                            "scan_section": section_name
+                        });
+                        if let Some(v) = net.get("bssid").and_then(|v| v.as_str()) {
+                            log_json["bssid"] = json!(v);
+                        }
+                        if let Some(v) = net.get("frequency").and_then(|v| v.as_u64()) {
+                            log_json["frequency"] = json!(v);
+                        }
+                        if let Some(v) = net.get("rssi").and_then(|v| v.as_i64()) {
+                            log_json["rssi"] = json!(v);
+                        }
+                        if let Some(v) = net.get("age").and_then(|v| v.as_str()) {
+                            log_json["age"] = json!(v);
+                        }
+                        if let Some(v) = net.get("ssid").and_then(|v| v.as_str()) {
+                            log_json["ssid"] = json!(v);
+                        }
+                        if let Some(arr) = net.get("security").and_then(|v| v.as_array()) {
+                            let sec: Vec<&str> = arr.iter().filter_map(|v| v.as_str()).collect();
+                            if !sec.is_empty() {
+                                log_json["security"] = json!(sec);
+                            }
+                        }
+                        match json_to_log_entry(log_json) {
+                            Ok(entry) => entries.push(entry),
+                            Err(e) => {
+                                conversion_errors += 1;
+                                warn!("Network parser: Failed to convert scan_result {} in {}: {}", idx + 1, section_name, e);
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(events) = wifi.get("scan_events").and_then(|v| v.as_array()) {
+            for (idx, ev) in events.iter().enumerate() {
+                let mut log_json = json!({ "event_type": "wifi_scan_event" });
+                if let Some(v) = ev.get("timestamp").and_then(|v| v.as_str()) {
+                    log_json["timestamp"] = json!(v);
+                }
+                if let Some(v) = ev.get("event_type").and_then(|v| v.as_str()) {
+                    log_json["scan_event_type"] = json!(v);
+                }
+                if let Some(v) = ev.get("uid").and_then(|v| v.as_u64()) {
+                    log_json["uid"] = json!(v);
+                }
+                if let Some(v) = ev.get("package").and_then(|v| v.as_str()) {
+                    log_json["package"] = json!(v);
+                }
+                if let Some(v) = ev.get("attribution_tag").and_then(|v| v.as_str()) {
+                    log_json["attribution_tag"] = json!(v);
+                }
+                if ev.get("work_source").is_some() {
+                    log_json["work_source"] = ev.get("work_source").unwrap().clone();
+                }
+                match json_to_log_entry(log_json) {
+                    Ok(entry) => entries.push(entry),
+                    Err(e) => {
+                        conversion_errors += 1;
+                        warn!("Network parser: Failed to convert scan_event {}: {}", idx + 1, e);
+                    }
+                }
+            }
+        }
+    }
+
+    debug!(
+        "Network parser: Extracted {} total entries ({} conversion errors)",
+        entries.len(),
+        conversion_errors
+    );
+
+    if entries.is_empty() {
+        debug!("Network parser: No log entries extracted");
+        None
+    } else {
+        Some(entries)
+    }
+}
+
 /// Extracts log entries from CrashParser output
 fn extract_crash_entries(output: &Value) -> Option<Vec<LogEntry>> {
     let mut entries = Vec::new();
@@ -1248,6 +1500,67 @@ mod tests {
         assert_eq!(
             entries[1].fields.get("connected").and_then(|v: &serde_json::Value| v.as_bool()),
             Some(true)
+        );
+    }
+
+    #[test]
+    fn test_extract_network_entries() {
+        let output = json!({
+            "sockets": [
+                {
+                    "protocol": "tcp",
+                    "local_address": "127.0.0.1:12345",
+                    "remote_address": "10.0.0.1:443",
+                    "local_ip": "127.0.0.1",
+                    "local_port": 12345,
+                    "remote_ip": "10.0.0.1",
+                    "remote_port": 443,
+                    "state": "ESTABLISHED",
+                    "uid": 10100
+                }
+            ],
+            "interfaces": [
+                {
+                    "name": "wlan0",
+                    "ip_addresses": ["192.168.1.100"],
+                    "flags": ["UP", "BROADCAST"],
+                    "mtu": 1500,
+                    "rx_bytes": 1000000,
+                    "tx_bytes": 500000
+                }
+            ],
+            "network_stats": [
+                {
+                    "rx_bytes": 2000000,
+                    "tx_bytes": 800000,
+                    "network_type": "WIFI",
+                    "wifi_network_name": "MyNetwork",
+                    "metered": false,
+                    "default_network": true
+                }
+            ],
+            "wifi_scanner": {
+                "saved_networks": ["HomeWiFi", "Office"]
+            }
+        });
+        let entries = extract_network_entries(&output).unwrap();
+        // 1 socket + 1 interface + 1 network_stat + 2 saved_networks = 5 entries
+        assert_eq!(entries.len(), 5);
+        let event_types: Vec<Option<&str>> = entries
+            .iter()
+            .map(|e| e.fields.get("event_type").and_then(|v: &serde_json::Value| v.as_str()))
+            .collect();
+        assert!(event_types.contains(&Some("network_socket")));
+        assert!(event_types.contains(&Some("network_interface")));
+        assert!(event_types.contains(&Some("network_stats")));
+        assert!(event_types.contains(&Some("wifi_saved_network")));
+        assert_eq!(
+            entries[0].fields.get("protocol").and_then(|v: &serde_json::Value| v.as_str()),
+            Some("tcp")
+        );
+        assert_eq!(
+            entries[1].fields.get("name").and_then(|v: &serde_json::Value| v.as_str()),
+            Some("wlan0")
         );
     }
 }
