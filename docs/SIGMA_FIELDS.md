@@ -357,7 +357,7 @@ Example and CVE rules are under `testdata/rules/`:
 
 - **Package / install**: `browser_to_non_store_install.yml`, `match_package.yml`, `suspicious_initiator.yml`
 - **Crash / tombstone**: `tombstone_backtrace_imagecodec.yml` (library-based), and rules matching on `function` (e.g. QuramDngOpcodeScalePerColumn::processArea)
-- **CVE rules**: `testdata/rules/CVE/` (e.g. `CVE-2025-21055.yaml`)
+- **CVE rules**: `testdata/rules/CVE/` — CVE-2025-21055, 26455, 27363, 58478 (crash/tombstone); CVE-2025-36911 (Bluetooth WhisperPair); CVE-2025-48543 (ART, actively exploited); CVE-2024-0050, 2024-34736 (libstagefright)
 - **Example rules (full field coverage)**: `testdata/rules/examples/` — one rule file per parser/event type, each referencing every Sigma field for that source (see `testdata/rules/examples/README.md`).
 
 When running the CLI, point `--rules-dir` at `./testdata/rules` to include all subdirectories (including `CVE/` and `examples/`).
