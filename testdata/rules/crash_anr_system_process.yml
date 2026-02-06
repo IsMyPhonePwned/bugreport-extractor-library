@@ -1,0 +1,28 @@
+title: ANR in System or Critical Process
+id: f8a9b0c1-d2e3-4f4a-5b6c-7d8e9f0a1b2c
+status: experimental
+description: Detects ANR (Application Not Responding) in system server or critical system processes. May indicate system instability, resource exhaustion, or denial-of-service.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/tests/debug/anr
+logsource:
+    product: android
+    category: crash
+detection:
+    selection:
+        event_type: anr_trace
+        crash_type: anr
+    selection_system_subject:
+        event_type: anr_trace
+        subject|contains:
+            - 'system_server'
+            - 'com.android.systemui'
+            - 'system'
+    condition: selection and selection_system_subject
+falsepositives:
+    - ANR in system UI during heavy load
+level: high
+tags:
+    - impact.availability
+    - crash.anr

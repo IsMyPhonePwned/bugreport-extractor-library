@@ -1,0 +1,32 @@
+title: Process Running as Root or System User
+id: f2a3b4c5-d6e7-4f8a-9b0c-1d2e3f4a5b6c
+status: experimental
+description: Detects processes running under root or system user. On production devices this may indicate compromise, debugging, or a misconfigured app running with elevated privileges.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/permissions
+logsource:
+    product: android
+    category: process
+detection:
+    selection:
+        event_type: process_running
+    selection_root_system:
+        event_type: process_running
+        user|contains:
+            - 'root'
+            - 'system'
+    filter_known_system_processes:
+        cmd|startswith:
+            - 'com.android.'
+            - '/system/'
+            - '[kthreadd]'
+    condition: selection and selection_root_system and not filter_known_system_processes
+falsepositives:
+    - Emulators and rooted development devices
+    - System daemons on custom ROMs
+level: high
+tags:
+    - attack.privilege_escalation
+    - discovery.process

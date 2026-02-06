@@ -1,0 +1,31 @@
+title: Unexpected Device Reset or Kernel Panic
+id: a3b4c5d6-e7f8-4a9b-0c1d-2e3f4a5b6c7d
+status: experimental
+description: Detects power reset reasons that may indicate kernel panic, watchdog, or unexpected shutdown. Useful for stability and security monitoring (e.g. crash loops, exploit attempts).
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/debug/kernel
+logsource:
+    product: android
+    category: power
+detection:
+    selection:
+        event_type: reset_reason
+    selection_suspicious:
+        event_type: reset_reason
+        reason|contains:
+            - 'kernel'
+            - 'panic'
+            - 'watchdog'
+            - 'oom'
+            - 'reboot'
+    condition: selection and selection_suspicious
+falsepositives:
+    - User-initiated reboot
+    - OTA update reboot
+    - Low battery shutdown
+level: medium
+tags:
+    - impact.availability
+    - discovery.system

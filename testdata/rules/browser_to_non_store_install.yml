@@ -1,0 +1,34 @@
+title: Browser Downloads Installing Apps Without Play Store
+id: b2c3d4e5-f6a7-4b8c-9d0e-1f2a3b4c5d6e
+status: experimental
+description: Detects package installations where the originating package is a browser but the installer is not the official Play Store. This may indicate sideloading of potentially malicious APKs downloaded from the web.
+author: BugReport Extractor Library
+date: 2026/01/29
+references:
+    - https://source.android.com/docs/core/ota/modular-system/download-provider
+logsource:
+    product: android
+    category: package_install
+detection:
+    selection_browser_origin:
+        event_type: START_INSTALL
+        originatingPackageName|contains:
+            - 'browser'
+            - 'chrome'
+            - 'firefox'
+            - 'opera'
+            - 'edge'
+    filter_play_store:
+        installerPackageName:
+            - 'com.android.vending'
+            - 'com.google.android.packageinstaller'
+    condition: selection_browser_origin and not filter_play_store
+falsepositives:
+    - Enterprise app distribution via internal portals
+    - Development/testing scenarios
+    - Custom ROM updaters
+level: high
+tags:
+    - attack.initial_access
+    - attack.t1475
+    - attack.delivery

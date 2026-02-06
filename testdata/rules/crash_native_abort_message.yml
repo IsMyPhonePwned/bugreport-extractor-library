@@ -1,0 +1,24 @@
+title: Native Crash with Abort Message (SIGABRT)
+id: e7f8a9b0-c1d2-4e3f-4a5b-6c7d8e9f0a1b
+status: experimental
+description: Detects native (tombstone) crashes with SIGABRT and an abort message. Often indicates assertion failure, deliberate abort, or possible exploit/crash loop in native code.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/tests/debug/native-crash
+logsource:
+    product: android
+    category: crash
+detection:
+    selection:
+        event_type: native_crash
+        crash_type: tombstone
+        signal: 'SIGABRT'
+    condition: selection
+falsepositives:
+    - Intentional abort in debug builds
+    - Assertion failures in development
+level: low
+tags:
+    - impact.crash
+    - crash.tombstone

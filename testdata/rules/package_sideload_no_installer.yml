@@ -1,0 +1,37 @@
+title: Sideloaded Package Without Installer Attribution
+id: e1f2a3b4-c5d6-4e7f-8a9b-0c1d2e3f4a5b
+status: experimental
+description: Detects installed packages whose installer is not a known store or system installer. Catches sideloaded apps, packages with no installer attribution, or installs from unknown sources.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://developer.android.com/reference/android/content/pm/PackageInfo#installerPackageName
+logsource:
+    product: android
+    category: package_install
+detection:
+    selection_package_metadata:
+        package_name|contains: '.'
+    filter_known_installers:
+        installerPackageName:
+            - 'com.android.vending'
+            - 'com.google.android.packageinstaller'
+            - 'com.android.packageinstaller'
+            - 'com.google.android.gms'
+            - 'com.sec.android.app.samsungapps'
+            - 'com.android.managedprovisioning'
+    filter_system_packages:
+        package_name|startswith:
+            - 'com.android.'
+            - 'com.google.android.gms'
+            - 'com.samsung.android.'
+    condition: selection_package_metadata and not filter_known_installers and not filter_system_packages
+falsepositives:
+    - Factory reset / OTA pre-installed apps
+    - System apps without installer set
+    - Restored apps from backup
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1476
+    - discovery.software

@@ -1,0 +1,28 @@
+title: WiFi Scan by Third-Party App
+id: b0c1d2e3-f4a5-4b6c-7d8e-9f0a1b2c3d4e
+status: experimental
+description: Detects WiFi scan events initiated by apps other than system or known location/network services. May indicate tracking, wardriving, or privacy-invasive behavior.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://developer.android.com/guide/topics/connectivity/wifi-scan
+logsource:
+    product: android
+    category: network
+detection:
+    selection:
+        event_type: wifi_scan_event
+    filter_system_scanners:
+        package|startswith:
+            - 'com.android.'
+            - 'com.google.android.gms'
+            - 'com.google.android.location'
+            - 'com.samsung.android.'
+    condition: selection and not filter_system_scanners
+falsepositives:
+    - Legitimate location or network utility apps
+    - VPN or Wi-Fi analyzer apps
+level: low
+tags:
+    - discovery.wifi
+    - collection.location

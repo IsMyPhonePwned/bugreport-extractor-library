@@ -1,0 +1,36 @@
+title: Outbound TCP Connection to Non-Standard Port
+id: a9b0c1d2-e3f4-4a5b-6c7d-8e9f0a1b2c3d
+status: experimental
+description: Detects established outbound TCP connections to remote ports outside common web/email (80, 443, 8080, 993, etc.). May indicate C2, exfiltration, or custom protocols.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/connectivity
+logsource:
+    product: android
+    category: network
+detection:
+    selection:
+        event_type: network_socket
+        protocol: 'tcp'
+        state: 'ESTABLISHED'
+    filter_common_ports:
+        remote_port:
+            - 80
+            - 443
+            - 8080
+            - 8443
+            - 993
+            - 995
+            - 5228
+            - 5229
+    condition: selection and not filter_common_ports
+falsepositives:
+    - VPN, proxy, or custom app protocols
+    - Game or streaming apps
+    - Enterprise MDM
+level: medium
+tags:
+    - attack.command_and_control
+    - attack.exfiltration
+    - network.connection

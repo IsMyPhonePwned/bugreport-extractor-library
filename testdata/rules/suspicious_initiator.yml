@@ -1,0 +1,30 @@
+title: Suspicious Package Installation from Non-Standard Initiator
+id: a1b2c3d4-e5f6-4a5b-8c9d-0e1f2a3b4c5d
+status: experimental
+description: Detects package installations initiated by unexpected or potentially malicious packages. Standard initiators should be system apps like PackageInstaller or Vending (Play Store).
+author: BugReport Extractor Library
+date: 2026/01/29
+references:
+    - https://developer.android.com/reference/android/content/pm/PackageInstaller
+logsource:
+    product: android
+    category: package_install
+detection:
+    selection:
+        event_type: START_INSTALL
+    filter_known_initiators:
+        initiatingPackageName:
+            - 'com.google.android.packageinstaller'
+            - 'com.android.packageinstaller'
+            - 'com.android.vending'
+            - 'com.google.android.gms'
+            - 'com.sec.android.app.samsungapps'
+    condition: selection and not filter_known_initiators
+falsepositives:
+    - Custom enterprise app stores
+    - Device manufacturer update services
+    - Legitimate sideloading scenarios
+level: medium
+tags:
+    - attack.persistence
+    - attack.t1398

@@ -1,0 +1,27 @@
+title: Tombstone Backtrace in Image/Media Codec Library
+id: b2c3d4e5-f6a7-5b6c-9d0e-1f2a3b4c5d6e
+status: experimental
+description: Detects native crashes (tombstones) whose backtrace includes frames from image or media codec libraries. Can indicate exploitation of vulnerable codecs (e.g. Quram, Stagefright) or fuzzing.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/tests/debug/native-crash
+logsource:
+    product: android
+    category: crash
+    definition: Tombstone backtrace frames from crash parser output
+detection:
+    selection:
+        event_type: tombstone_backtrace
+        library|contains:
+            - 'libimagecodec'
+            - 'libstagefright'
+            - 'libmedia'
+    condition: selection
+falsepositives:
+    - Legitimate app crashes in media decoding
+    - Device-specific codec bugs
+level: medium
+tags:
+    - attack.execution
+    - crash.tombstone

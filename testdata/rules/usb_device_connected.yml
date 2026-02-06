@@ -1,0 +1,25 @@
+title: USB Device Connected to Device
+id: c5d6e7f8-a9b0-4c1d-2e3f-4a5b6c7d8e9f
+status: experimental
+description: Detects when a USB device is connected. Useful for air-gapped or kiosk scenarios where USB should be restricted, or to audit peripheral attachment.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://source.android.com/docs/core/usb
+logsource:
+    product: android
+    category: usb
+detection:
+    selection_port_connected:
+        event_type: usb_port
+        connected: true
+    selection_device:
+        event_type: usb_device
+    condition: selection_port_connected or selection_device
+falsepositives:
+    - Charging cable (no device)
+    - Authorized USB accessories
+level: low
+tags:
+    - discovery.physical_access
+    - discovery.peripheral

@@ -1,0 +1,29 @@
+title: App with Excessive Background Network or Wakelock
+id: b4c5d6e7-f8a9-4b0c-1d2e-3f4a5b6c7d8e
+status: experimental
+description: Detects apps with unusually high background network usage or wakelock time. May indicate data exfiltration, cryptomining, or poorly behaving/malicious background services.
+author: BugReport Extractor Library
+date: 2026/02/02
+references:
+    - https://developer.android.com/topic/performance/power
+logsource:
+    product: android
+    category: battery
+detection:
+    selection:
+        event_type: battery_app_stats
+    selection_high_network:
+        event_type: battery_app_stats
+        total_network_bytes: 50000000
+    selection_high_wakelock:
+        event_type: battery_app_stats
+        total_wakelock_time_ms: 3600000
+    condition: selection and (selection_high_network or selection_high_wakelock)
+falsepositives:
+    - Streaming or sync apps
+    - Navigation apps
+    - Enterprise MDM or backup apps
+level: medium
+tags:
+    - attack.exfiltration
+    - impact.resource_abuse
