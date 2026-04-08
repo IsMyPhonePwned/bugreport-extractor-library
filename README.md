@@ -313,26 +313,26 @@ Analyzes temporal patterns in crashes to identify exploitation techniques:
 
 ```bash
 # Battery-based detection only
-./bugreport_extractor -f bugreport.txt -p battery --detection
+cargo run -- -f bugreport.txt -p battery --detection
 
 # Crash-based detection only
-./bugreport_extractor -f bugreport.txt -p crash --detection
+cargo run -- -f bugreport.txt -p crash --detection
 
 # Unified detection (recommended - uses both)
-./bugreport_extractor -f bugreport.txt -p battery -p crash --detection
+cargo run -- -f bugreport.txt -p battery -p crash --detection
 ```
 
 #### Custom Detection Configuration
 
 ```bash
 # Use custom detection thresholds
-./bugreport_extractor -f bugreport.txt -p battery -p crash --detection config.json
+cargo run -- -f bugreport.txt -p battery -p crash --detection config.json
 
 # Strict mode (high-security environments)
-./bugreport_extractor -f bugreport.txt -p battery --detection strict
+cargo run -- -f bugreport.txt -p battery --detection strict
 
 # Lenient mode (corporate/MDM environments)
-./bugreport_extractor -f bugreport.txt -p battery --detection lenient
+cargo run -- -f bugreport.txt -p battery --detection lenient
 ```
 
 #### Detection Configuration File
@@ -452,20 +452,20 @@ Sigma rules can be applied to any parsed data:
 
 ```bash
 # Run Sigma detection with rules directory
-./bugreport_extractor \
+cargo run -- \
     -f bugreport.txt \
     -p battery -p process -p crash \
     --rules-dir /path/to/sigma/rules
 
 # Filter by minimum severity level
-./bugreport_extractor \
+cargo run -- \
     -f bugreport.txt \
     -p battery \
     --rules-dir ./rules \
     --min-level high
 
 # Show detailed log information with matches
-./bugreport_extractor \
+cargo run -- \
     -f bugreport.txt \
     -p battery \
     --rules-dir ./rules \
@@ -555,7 +555,7 @@ Both detection systems can run simultaneously:
 
 ```bash
 # Run both detection systems
-./bugreport_extractor \
+cargo run -- \
     -f bugreport.txt \
     -p battery -p crash \
     --detection \
