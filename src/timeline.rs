@@ -3,7 +3,15 @@
 //!
 //! Each line is one JSON object with Plaso/Timesketch-friendly fields:
 //! `message`, `datetime` (RFC3339), `timestamp_desc`, `timestamp` (epoch microseconds),
-//! `time_is_approximate`, `data_type`, `bugreport_parser`, plus parser-specific fields.
+//! `time_is_approximate`, `data_type`, `parser`, `bugreport_parser`, `event_time_binding`,
+//! plus parser-specific fields.
+//!
+//! **`event_time_binding`** tells you whether `datetime` is a real event time from the record
+//! (`per_record`) or only the bugreport/dumpstate capture instant / wall clock (`snapshot_only`,
+//! `system_fallback`). Parsers such as **Process (ps/top)** never attach per-row times in the
+//! bugreport; those rows are `snapshot_only` so you can drop or tag them for strict Timesketch
+//! timelines. **`parser`** is the `ParserType` name (e.g. `Process`); **`bugreport_parser`** is the
+//! same identifier in lowercase for filters.
 
 use chrono::{DateTime, NaiveDateTime, Utc};
 use serde_json::{json, Map, Value};
@@ -48,7 +56,19 @@ fn truncate_message(s: &str) -> String {
     s.chars().take(MAX_MESSAGE_CHARS).collect()
 }
 
-fn fallback_from_header(results: &[(ParserType, Result<Value, Box<dyn Error + Send + Sync>>, std::time::Duration)]) -> (String, bool) {
+/// Reference time from the dumpstate header when a parser row has no intrinsic timestamp.
+#[derive(Debug, Clone)]
+pub struct BugreportFallbackTime {
+    pub datetime: String,
+    /// True when the header timestamp string could not be normalized to RFC3339.
+    pub time_is_approximate: bool,
+    /// True when no dumpstate header was found and `datetime` is the wall clock at export.
+    pub no_bugreport_header: bool,
+}
+
+fn fallback_from_header(
+    results: &[(ParserType, Result<Value, Box<dyn Error + Send + Sync>>, std::time::Duration)],
+) -> BugreportFallbackTime {
     for (pt, res, _) in results {
         if *pt != ParserType::Header {
             continue;
@@ -56,16 +76,54 @@ fn fallback_from_header(results: &[(ParserType, Result<Value, Box<dyn Error + Se
         if let Ok(v) = res {
             if let Some(ts) = v.get("timestamp").and_then(|x| x.as_str()) {
                 if let Some(dt) = parse_ts(ts) {
-                    return (dt.to_rfc3339(), false);
+                    return BugreportFallbackTime {
+                        datetime: dt.to_rfc3339(),
+                        time_is_approximate: false,
+                        no_bugreport_header: false,
+                    };
                 }
-                return (ts.to_string(), true);
+                return BugreportFallbackTime {
+                    datetime: ts.to_string(),
+                    time_is_approximate: true,
+                    no_bugreport_header: false,
+                };
             }
         }
     }
-    (
-        Utc::now().to_rfc3339(),
-        true,
-    )
+    BugreportFallbackTime {
+        datetime: Utc::now().to_rfc3339(),
+        time_is_approximate: true,
+        no_bugreport_header: true,
+    }
+}
+
+/// Whether `datetime` reflects an occurrence time from the parsed row itself.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum EventTimeBinding {
+    /// Timestamp comes from this record (install log line, tombstone field, battery history row, …).
+    PerRecord,
+    /// `datetime` is only the bugreport capture / dumpstate reference time (e.g. ps list, sockets).
+    SnapshotOnly,
+    /// No header was available; `datetime` is the exporter wall clock.
+    SystemFallback,
+}
+
+impl EventTimeBinding {
+    fn as_str(self) -> &'static str {
+        match self {
+            Self::PerRecord => "per_record",
+            Self::SnapshotOnly => "snapshot_only",
+            Self::SystemFallback => "system_fallback",
+        }
+    }
+}
+
+fn binding_when_row_has_no_parsed_time(ctx: &BugreportFallbackTime) -> EventTimeBinding {
+    if ctx.no_bugreport_header {
+        EventTimeBinding::SystemFallback
+    } else {
+        EventTimeBinding::SnapshotOnly
+    }
 }
 
 fn push_event(
@@ -76,14 +134,19 @@ fn push_event(
     datetime: String,
     timestamp_desc: &str,
     time_approx: bool,
-    parser_id: &str,
+    parser_type: ParserType,
     data_type: &str,
+    event_binding: EventTimeBinding,
     extra: Map<String, Value>,
 ) {
     if *global == 0 || *parser_budget == 0 {
         return;
     }
+    let parser_slug = format!("{parser_type:?}").to_lowercase();
     let mut row = Map::new();
+    for (k, v) in extra {
+        row.insert(k, v);
+    }
     row.insert("message".into(), json!(truncate_message(&message)));
     row.insert("datetime".into(), json!(datetime.clone()));
     row.insert("timestamp_desc".into(), json!(timestamp_desc));
@@ -92,10 +155,9 @@ fn push_event(
         row.insert("timestamp".into(), json!(us));
     }
     row.insert("data_type".into(), json!(data_type));
-    row.insert("bugreport_parser".into(), json!(parser_id));
-    for (k, v) in extra {
-        row.insert(k, v);
-    }
+    row.insert("parser".into(), json!(format!("{parser_type:?}")));
+    row.insert("bugreport_parser".into(), json!(parser_slug));
+    row.insert("event_time_binding".into(), json!(event_binding.as_str()));
     out.push(Value::Object(row));
     *global -= 1;
     *parser_budget -= 1;
@@ -103,7 +165,7 @@ fn push_event(
 
 fn flatten_header(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -112,10 +174,16 @@ fn flatten_header(
         return;
     };
     let ts = obj.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-    let (datetime, approx) = if let Some(dt) = parse_ts(ts) {
+    let parsed = parse_ts(ts);
+    let (datetime, approx) = if let Some(dt) = parsed {
         (dt.to_rfc3339(), false)
     } else {
-        (fallback.0.clone(), true)
+        (ctx.datetime.clone(), ctx.time_is_approximate)
+    };
+    let binding = if parsed.is_some() {
+        EventTimeBinding::PerRecord
+    } else {
+        binding_when_row_has_no_parsed_time(ctx)
     };
     let mut parts: Vec<String> = Vec::new();
     for (k, val) in obj {
@@ -133,15 +201,16 @@ fn flatten_header(
         datetime,
         "bugreport_header",
         approx,
-        "header",
+        ParserType::Header,
         "android:bugreport:header",
+        binding,
         obj.clone(),
     );
 }
 
 fn flatten_memory(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -150,6 +219,7 @@ fn flatten_memory(
         Some(a) => a,
         None => return,
     };
+    let binding = binding_when_row_has_no_parsed_time(ctx);
     for (i, block) in arr.iter().enumerate() {
         let msg = format!("Memory snapshot {i}: {}", block.to_string());
         push_event(
@@ -157,11 +227,12 @@ fn flatten_memory(
             global,
             pb,
             msg,
-            fallback.0.clone(),
+            ctx.datetime.clone(),
             "memory_snapshot",
-            fallback.1,
-            "memory",
+            ctx.time_is_approximate,
+            ParserType::Memory,
             "android:bugreport:memory",
+            binding,
             block.as_object().cloned().unwrap_or_default(),
         );
     }
@@ -169,7 +240,7 @@ fn flatten_memory(
 
 fn flatten_process(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -177,6 +248,7 @@ fn flatten_process(
     let Some(arr) = v.as_array() else {
         return;
     };
+    let binding = binding_when_row_has_no_parsed_time(ctx);
     for p in arr {
         let Some(o) = p.as_object() else {
             continue;
@@ -190,11 +262,12 @@ fn flatten_process(
             global,
             pb,
             msg,
-            fallback.0.clone(),
+            ctx.datetime.clone(),
             "process_list",
-            fallback.1,
-            "process",
+            ctx.time_is_approximate,
+            ParserType::Process,
             "android:bugreport:process",
+            binding,
             o.clone(),
         );
     }
@@ -202,11 +275,12 @@ fn flatten_process(
 
 fn flatten_battery(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
 ) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
     if let Some(apps) = v.get("apps").and_then(|a| a.as_array()) {
         for app in apps {
             let Some(o) = app.as_object() else {
@@ -223,11 +297,12 @@ fn flatten_battery(
                 global,
                 pb,
                 msg,
-                fallback.0.clone(),
+                ctx.datetime.clone(),
                 "battery_app_stats",
-                fallback.1,
-                "battery",
+                ctx.time_is_approximate,
+                ParserType::Battery,
                 "android:bugreport:battery_app",
+                snap,
                 o.clone(),
             );
         }
@@ -238,9 +313,20 @@ fn flatten_battery(
                 continue;
             };
             let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-            let (datetime, approx) = parse_ts(ts)
-                .map(|d| (d.to_rfc3339(), false))
-                .unwrap_or_else(|| (fallback.0.clone(), true));
+            let row_parsed = parse_ts(ts);
+            let (datetime, approx, binding) = if let Some(dt) = row_parsed {
+                (
+                    dt.to_rfc3339(),
+                    false,
+                    EventTimeBinding::PerRecord,
+                )
+            } else {
+                (
+                    ctx.datetime.clone(),
+                    ctx.time_is_approximate,
+                    snap,
+                )
+            };
             let status = o.get("status").and_then(|x| x.as_str()).unwrap_or("");
             let msg = format!("Battery history: status={status}");
             push_event(
@@ -251,8 +337,9 @@ fn flatten_battery(
                 datetime,
                 "battery_history",
                 approx,
-                "battery",
+                ParserType::Battery,
                 "android:bugreport:battery_history",
+                binding,
                 o.clone(),
             );
         }
@@ -261,20 +348,24 @@ fn flatten_battery(
 
 fn flatten_power(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
 ) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
     if let Some(hist) = v.get("power_history").and_then(|a| a.as_array()) {
         for e in hist {
             let Some(o) = e.as_object() else {
                 continue;
             };
             let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-            let (datetime, approx) = parse_ts(ts)
-                .map(|d| (d.to_rfc3339(), false))
-                .unwrap_or_else(|| (fallback.0.clone(), true));
+            let row_parsed = parse_ts(ts);
+            let (datetime, approx, binding) = if let Some(dt) = row_parsed {
+                (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+            } else {
+                (ctx.datetime.clone(), ctx.time_is_approximate, snap)
+            };
             let et = o.get("event_type").and_then(|x| x.as_str()).unwrap_or("");
             let msg = format!("Power event: {et}");
             push_event(
@@ -285,8 +376,9 @@ fn flatten_power(
                 datetime,
                 "power_history",
                 approx,
-                "power",
+                ParserType::Power,
                 "android:bugreport:power",
+                binding,
                 o.clone(),
             );
         }
@@ -303,11 +395,12 @@ fn flatten_power(
                 global,
                 pb,
                 msg,
-                fallback.0.clone(),
+                ctx.datetime.clone(),
                 "reset_reason",
-                fallback.1,
-                "power",
+                ctx.time_is_approximate,
+                ParserType::Power,
                 "android:bugreport:reset_reason",
+                snap,
                 o.clone(),
             );
         }
@@ -316,7 +409,7 @@ fn flatten_power(
 
 fn flatten_usb(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -324,6 +417,7 @@ fn flatten_usb(
     let Some(arr) = v.as_array().and_then(|a| a.first()) else {
         return;
     };
+    let binding = binding_when_row_has_no_parsed_time(ctx);
     if let Some(ports) = arr.get("ports").and_then(|a| a.as_array()) {
         for p in ports {
             if let Some(o) = p.as_object() {
@@ -334,11 +428,12 @@ fn flatten_usb(
                     global,
                     pb,
                     msg,
-                    fallback.0.clone(),
+                    ctx.datetime.clone(),
                     "usb_port",
-                    fallback.1,
-                    "usb",
+                    ctx.time_is_approximate,
+                    ParserType::Usb,
                     "android:bugreport:usb_port",
+                    binding,
                     o.clone(),
                 );
             }
@@ -354,11 +449,12 @@ fn flatten_usb(
                     global,
                     pb,
                     msg,
-                    fallback.0.clone(),
+                    ctx.datetime.clone(),
                     "usb_device",
-                    fallback.1,
-                    "usb",
+                    ctx.time_is_approximate,
+                    ParserType::Usb,
                     "android:bugreport:usb_device",
+                    binding,
                     o.clone(),
                 );
             }
@@ -368,11 +464,12 @@ fn flatten_usb(
 
 fn flatten_crash(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
 ) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
     if let Some(tombs) = v.get("tombstones").and_then(|a| a.as_array()) {
         for t in tombs {
             let Some(o) = t.as_object() else {
@@ -382,9 +479,12 @@ fn flatten_crash(
             let sig = o.get("signal").and_then(|x| x.as_str()).unwrap_or("");
             let msg = format!("Native crash (tombstone): {proc} signal={sig}");
             let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-            let (datetime, approx) = parse_ts(ts)
-                .map(|d| (d.to_rfc3339(), false))
-                .unwrap_or_else(|| (fallback.0.clone(), true));
+            let row_parsed = parse_ts(ts);
+            let (datetime, approx, binding) = if let Some(dt) = row_parsed {
+                (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+            } else {
+                (ctx.datetime.clone(), ctx.time_is_approximate, snap)
+            };
             push_event(
                 out,
                 global,
@@ -393,8 +493,9 @@ fn flatten_crash(
                 datetime.clone(),
                 "tombstone",
                 approx,
-                "crash",
+                ParserType::Crash,
                 "android:bugreport:tombstone",
+                binding,
                 o.clone(),
             );
             if let Some(bt) = o.get("backtrace").and_then(|a| a.as_array()) {
@@ -415,8 +516,9 @@ fn flatten_crash(
                         datetime.clone(),
                         "tombstone_backtrace",
                         approx,
-                        "crash",
+                        ParserType::Crash,
                         "android:bugreport:tombstone_frame",
+                        binding,
                         ex,
                     );
                 }
@@ -429,9 +531,12 @@ fn flatten_crash(
                 let name = o.get("filename").and_then(|x| x.as_str()).unwrap_or("");
                 let msg = format!("ANR file: {name}");
                 let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-                let (datetime, approx) = parse_ts(ts)
-                    .map(|d| (d.to_rfc3339(), false))
-                    .unwrap_or_else(|| (fallback.0.clone(), true));
+                let row_parsed = parse_ts(ts);
+                let (datetime, approx, binding) = if let Some(dt) = row_parsed {
+                    (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+                } else {
+                    (ctx.datetime.clone(), ctx.time_is_approximate, snap)
+                };
                 push_event(
                     out,
                     global,
@@ -440,8 +545,9 @@ fn flatten_crash(
                     datetime,
                     "anr_file",
                     approx,
-                    "crash",
+                    ParserType::Crash,
                     "android:bugreport:anr_file",
+                    binding,
                     o.clone(),
                 );
             }
@@ -459,11 +565,12 @@ fn flatten_crash(
             global,
             pb,
             msg,
-            fallback.0.clone(),
+            ctx.datetime.clone(),
             "anr_trace",
-            fallback.1,
-            "crash",
+            ctx.time_is_approximate,
+            ParserType::Crash,
             "android:bugreport:anr_trace",
+            snap,
             trace
                 .as_object()
                 .cloned()
@@ -474,7 +581,7 @@ fn flatten_crash(
 
 fn flatten_network(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -482,6 +589,7 @@ fn flatten_network(
     let Some(obj) = v.as_object() else {
         return;
     };
+    let binding = binding_when_row_has_no_parsed_time(ctx);
     if let Some(socks) = obj.get("sockets").and_then(|a| a.as_array()) {
         for s in socks {
             if let Some(o) = s.as_object() {
@@ -494,11 +602,12 @@ fn flatten_network(
                     global,
                     pb,
                     msg,
-                    fallback.0.clone(),
+                    ctx.datetime.clone(),
                     "network_socket",
-                    fallback.1,
-                    "network",
+                    ctx.time_is_approximate,
+                    ParserType::Network,
                     "android:bugreport:network_socket",
+                    binding,
                     o.clone(),
                 );
             }
@@ -514,11 +623,12 @@ fn flatten_network(
                     global,
                     pb,
                     msg,
-                    fallback.0.clone(),
+                    ctx.datetime.clone(),
                     "network_interface",
-                    fallback.1,
-                    "network",
+                    ctx.time_is_approximate,
+                    ParserType::Network,
                     "android:bugreport:network_interface",
+                    binding,
                     o.clone(),
                 );
             }
@@ -534,11 +644,12 @@ fn flatten_network(
                     global,
                     pb,
                     msg,
-                    fallback.0.clone(),
+                    ctx.datetime.clone(),
                     "network_stats",
-                    fallback.1,
-                    "network",
+                    ctx.time_is_approximate,
+                    ParserType::Network,
                     "android:bugreport:network_stats",
+                    binding,
                     o.clone(),
                 );
             }
@@ -556,11 +667,12 @@ fn flatten_network(
                         global,
                         pb,
                         msg,
-                        fallback.0.clone(),
+                        ctx.datetime.clone(),
                         "wifi_saved_network",
-                        fallback.1,
-                        "network",
+                        ctx.time_is_approximate,
+                        ParserType::Network,
                         "android:bugreport:wifi_saved",
+                        binding,
                         ex,
                     );
                 }
@@ -571,11 +683,12 @@ fn flatten_network(
 
 fn flatten_bluetooth(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
 ) {
+    let binding = binding_when_row_has_no_parsed_time(ctx);
     if let Some(devs) = v.get("devices").and_then(|a| a.as_array()) {
         for d in devs {
             if let Some(o) = d.as_object() {
@@ -586,11 +699,12 @@ fn flatten_bluetooth(
                     global,
                     pb,
                     msg,
-                    fallback.0.clone(),
+                    ctx.datetime.clone(),
                     "bluetooth_device",
-                    fallback.1,
-                    "bluetooth",
+                    ctx.time_is_approximate,
+                    ParserType::Bluetooth,
                     "android:bugreport:bluetooth",
+                    binding,
                     o.clone(),
                 );
             }
@@ -600,7 +714,7 @@ fn flatten_bluetooth(
 
 fn flatten_package(
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -608,6 +722,7 @@ fn flatten_package(
     let Some(sections) = v.as_array() else {
         return;
     };
+    let snap = binding_when_row_has_no_parsed_time(ctx);
     for section in sections {
         let Some(sec) = section.as_object() else {
             continue;
@@ -621,9 +736,12 @@ fn flatten_package(
                 let pkg = lo.get("pkg").and_then(|x| x.as_str()).unwrap_or("");
                 let msg = format!("Package install log: {et} pkg={pkg}");
                 let ts = lo.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-                let (datetime, approx) = parse_ts(ts)
-                    .map(|d| (d.to_rfc3339(), false))
-                    .unwrap_or_else(|| (fallback.0.clone(), true));
+                let row_parsed = parse_ts(ts);
+                let (datetime, approx, binding) = if let Some(dt) = row_parsed {
+                    (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+                } else {
+                    (ctx.datetime.clone(), ctx.time_is_approximate, snap)
+                };
                 push_event(
                     out,
                     global,
@@ -632,8 +750,9 @@ fn flatten_package(
                     datetime,
                     "package_install_log",
                     approx,
-                    "package",
+                    ParserType::Package,
                     "android:bugreport:package_install",
+                    binding,
                     lo.clone(),
                 );
             }
@@ -649,10 +768,12 @@ fn flatten_package(
                     .get("lastUpdateTime")
                     .or_else(|| po.get("firstInstallTime"))
                     .and_then(|x| x.as_str());
-                let (datetime, approx) = ts
-                    .and_then(parse_ts)
-                    .map(|d| (d.to_rfc3339(), false))
-                    .unwrap_or_else(|| (fallback.0.clone(), true));
+                let row_parsed = ts.and_then(parse_ts);
+                let (datetime, approx, binding) = if let Some(dt) = row_parsed {
+                    (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+                } else {
+                    (ctx.datetime.clone(), ctx.time_is_approximate, snap)
+                };
                 push_event(
                     out,
                     global,
@@ -661,8 +782,9 @@ fn flatten_package(
                     datetime,
                     "package_metadata",
                     approx,
-                    "package",
+                    ParserType::Package,
                     "android:bugreport:package_metadata",
+                    binding,
                     po.clone(),
                 );
             }
@@ -673,7 +795,7 @@ fn flatten_package(
 fn flatten_generic_json(
     pt: ParserType,
     v: &Value,
-    fallback: &(String, bool),
+    ctx: &BugreportFallbackTime,
     out: &mut Vec<Value>,
     global: &mut usize,
     pb: &mut usize,
@@ -681,16 +803,18 @@ fn flatten_generic_json(
     let parser_id = format!("{pt:?}").to_lowercase();
     let dtype = format!("android:bugreport:{parser_id}");
     let msg = truncate_message(&format!("{parser_id} parser output: {}", v.to_string()));
+    let binding = binding_when_row_has_no_parsed_time(ctx);
     push_event(
         out,
         global,
         pb,
         msg,
-        fallback.0.clone(),
+        ctx.datetime.clone(),
         "parser_dump",
-        fallback.1,
-        &parser_id,
+        ctx.time_is_approximate,
+        pt,
         &dtype,
+        binding,
         match v {
             Value::Object(m) => m.clone(),
             _ => {
@@ -706,7 +830,7 @@ fn flatten_generic_json(
 pub fn export_timeline(
     results: &[(ParserType, Result<Value, Box<dyn Error + Send + Sync>>, std::time::Duration)],
 ) -> TimelineExport {
-    let fallback = fallback_from_header(results);
+    let ctx = fallback_from_header(results);
     let mut out: Vec<Value> = Vec::new();
     let mut global = MAX_EVENTS_TOTAL;
 
@@ -716,22 +840,22 @@ pub fn export_timeline(
             continue;
         };
         match pt {
-            ParserType::Header => flatten_header(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Memory => flatten_memory(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Process => flatten_process(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Battery => flatten_battery(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Power => flatten_power(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Usb => flatten_usb(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Crash => flatten_crash(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Network => flatten_network(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Bluetooth => flatten_bluetooth(v, &fallback, &mut out, &mut global, &mut pb),
-            ParserType::Package => flatten_package(v, &fallback, &mut out, &mut global, &mut pb),
+            ParserType::Header => flatten_header(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Memory => flatten_memory(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Process => flatten_process(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Battery => flatten_battery(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Power => flatten_power(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Usb => flatten_usb(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Crash => flatten_crash(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Network => flatten_network(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Bluetooth => flatten_bluetooth(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Package => flatten_package(v, &ctx, &mut out, &mut global, &mut pb),
             ParserType::DevicePolicy
             | ParserType::Adb
             | ParserType::Authentication
             | ParserType::Vpn
             | ParserType::Privacy => {
-                flatten_generic_json(*pt, v, &fallback, &mut out, &mut global, &mut pb);
+                flatten_generic_json(*pt, v, &ctx, &mut out, &mut global, &mut pb);
             }
         }
     }
@@ -775,7 +899,7 @@ pub fn export_timeline_value(
         "count": exp.count,
         "events": exp.events,
         "jsonl": exp.jsonl,
-        "note": "Plaso/Timesketch-style rows: message, datetime, timestamp_desc, timestamp (μs), time_is_approximate, data_type, bugreport_parser. When per-event time is missing, dumpstate header time is used (time_is_approximate=true). Save jsonl to a .jsonl file for streaming import."
+        "note": "Plaso/Timesketch-style rows: message, datetime, timestamp_desc, timestamp (μs), time_is_approximate, data_type, parser (PascalCase ParserType), bugreport_parser (lowercase), event_time_binding (per_record | snapshot_only | system_fallback). Use per_record for strict investigation timelines; snapshot_only marks rows (e.g. ps/process list) whose datetime is only the bugreport capture instant, not when the row occurred. Save jsonl to a .jsonl file for streaming import."
     })
 }
 
@@ -796,7 +920,9 @@ mod tests {
 ========================================================
 
 Build: TEST
------- PROCESSES ------
+------ PROCESSES AND THREADS (ps -A -T -Z -O u,pid,tid,ppid,vsz,rss,wchan,stat,rtprio,sched,comm,time,nl) ------
+LABEL                          USER           PID   TID   PPID      VSZ    RSS WCHAN            STAT RTPRIO SCHED COMM             TIME NL
+u:r:system_server:s0           system          1486  1486   878   25324084 378416 0                   S    19   0 system_server    00:11:33  1
 ";
         let parsers = vec![
             (ParserType::Header, Box::new(HeaderParser::new().unwrap()) as _),
@@ -812,7 +938,25 @@ Build: TEST
         assert!(exp.count >= 1);
         let v: Value = serde_json::from_str(exp.jsonl.lines().next().unwrap()).unwrap();
         assert!(v.get("message").is_some());
-        assert!(v.get("bugreport_parser").is_some());
+        assert_eq!(v.get("parser").and_then(|x| x.as_str()), Some("Header"));
+        assert_eq!(v.get("bugreport_parser").and_then(|x| x.as_str()), Some("header"));
+        assert_eq!(
+            v.get("event_time_binding").and_then(|x| x.as_str()),
+            Some("per_record")
+        );
+
+        let proc_row = exp
+            .events
+            .iter()
+            .find(|e| e.get("bugreport_parser").and_then(|x| x.as_str()) == Some("process"))
+            .expect("process parser rows");
+        assert_eq!(proc_row.get("parser").and_then(|x| x.as_str()), Some("Process"));
+        assert_eq!(
+            proc_row
+                .get("event_time_binding")
+                .and_then(|x| x.as_str()),
+            Some("snapshot_only")
+        );
     }
 
     #[test]
@@ -836,5 +980,19 @@ Build: TEST
         let exp = export_timeline(&results);
         assert!(exp.jsonl.contains("tombstone"));
         assert!(exp.jsonl.contains("Backtrace"));
+        let tomb = exp
+            .events
+            .iter()
+            .find(|e| {
+                e.get("timestamp_desc")
+                    .and_then(|x| x.as_str())
+                    == Some("tombstone")
+            })
+            .unwrap();
+        assert_eq!(tomb.get("parser").and_then(|x| x.as_str()), Some("Crash"));
+        assert_eq!(
+            tomb.get("event_time_binding").and_then(|x| x.as_str()),
+            Some("per_record")
+        );
     }
 }

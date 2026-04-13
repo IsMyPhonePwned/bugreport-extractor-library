@@ -18,7 +18,9 @@ pub mod file_loader;
 pub mod zip_utils;
 pub mod timeline;
 
-pub use timeline::{export_timeline, export_timeline_value, TimelineExport};
+pub use timeline::{
+    export_timeline, export_timeline_value, BugreportFallbackTime, EventTimeBinding, TimelineExport,
+};
 
 use timing::Instant;
 
