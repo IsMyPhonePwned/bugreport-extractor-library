@@ -43,7 +43,7 @@ pub trait Parser {
 }
 
 /// Enum to represent the available parser types for command-line selection.
-#[derive(clap::ValueEnum, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(clap::ValueEnum, Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[cfg(not(target_arch = "wasm32"))]
 pub enum ParserType {
     Header,
@@ -64,7 +64,7 @@ pub enum ParserType {
 }
 
 /// WASM-compatible parser type (without clap::ValueEnum)
-#[derive(Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
+#[derive(Copy, Clone, Debug, PartialEq, Eq, Hash, Serialize, Deserialize, PartialOrd, Ord)]
 #[cfg(target_arch = "wasm32")]
 pub enum ParserType {
     Header,

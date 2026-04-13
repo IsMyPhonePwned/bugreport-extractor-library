@@ -11,6 +11,7 @@ use tracing_subscriber;
 use sigma_zero::engine::SigmaEngine;
 
 use bugreport_extractor_library::run_parsers_concurrently;
+use bugreport_extractor_library::export_timeline;
 use bugreport_extractor_library::parsers::{
     AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, PrivacyParser, ProcessParser, UsbParser, VpnParser
 };
@@ -72,6 +73,10 @@ struct Args {
     /// Disable progress indicators (useful for scripting or when output is redirected)
     #[arg(long)]
     no_progress: bool,
+
+    /// Write a newline-delimited JSON timeline (Plaso/Timesketch-style rows) after parsing
+    #[arg(long, value_name = "PATH")]
+    timeline_jsonl: Option<PathBuf>,
 
     /// Comparison mode: compare two bugreports (provide two file paths)
     #[arg(long, num_args = 2, value_names = &["BEFORE", "AFTER"])]
@@ -335,6 +340,23 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
         }
         println!("  Total time: {:.2}ms", total_time.as_secs_f64() * 1000.0);
         println!();
+    }
+
+    if let Some(ref path) = args.timeline_jsonl {
+        let exp = export_timeline(&results);
+        std::fs::write(path, exp.jsonl.as_bytes())?;
+        info!(
+            "Wrote timeline JSONL ({} events) to {}",
+            exp.count,
+            path.display()
+        );
+        if !show_progress {
+            println!(
+                "Wrote {} timeline events to {}",
+                exp.count,
+                path.display()
+            );
+        }
     }
 
     // Print the JSON result from each parser.

@@ -177,6 +177,16 @@ Extracts VPN configuration and network properties.
 
 Each parser extracts data from specific sections within the dumpstate file, and some parsers may gather information from multiple sections to provide a complete picture.
 
+## Timeline JSONL export
+
+The library can flatten parser output into **Plaso/Timesketch-style** rows (one JSON object per line), in the same spirit as the timeline JSONL export in the sibling **sysdiagnose-extractor-library** tree. Use it from Rust via `bugreport_extractor_library::export_timeline` / `export_timeline_value` (`src/timeline.rs`), or from the CLI:
+
+```text
+cargo run --release -- --file-path=dumpstate.txt --timeline-jsonl=timeline.jsonl
+```
+
+Each line includes at least: `message`, `datetime` (RFC3339), `timestamp_desc`, `timestamp` (epoch **microseconds**), `time_is_approximate`, `data_type`, `bugreport_parser`, plus parser-specific fields merged from the source JSON. When an event has no reliable time, the dumpstate header timestamp is used and `time_is_approximate` is set to `true`. Export is capped (100k events total, 25k per parser) to keep files bounded.
+
 ## Usage
 
 Run multiple parsers from the command line:

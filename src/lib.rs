@@ -16,6 +16,9 @@ pub mod detection;
 pub mod timing;
 pub mod file_loader;
 pub mod zip_utils;
+pub mod timeline;
+
+pub use timeline::{export_timeline, export_timeline_value, TimelineExport};
 
 use timing::Instant;
 
