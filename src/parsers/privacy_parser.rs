@@ -266,8 +266,10 @@ impl PrivacyParser {
                 continue;
             }
             
-            // Parse last location (fine)
-            if line.starts_with("last location (fine):") {
+            // Parse last location (fine) — tolerate minor dumpsys wording variants
+            if line.starts_with("last location (fine):")
+                || line.starts_with("last location fine:")
+            {
                 if let Some(loc_start) = line.find('{') {
                     let loc_str = &line[loc_start..];
                     if let Some(location) = self.parse_location_coordinates(loc_str) {
@@ -279,7 +281,9 @@ impl PrivacyParser {
             }
             
             // Parse last location (coarse)
-            if line.starts_with("last location (coarse):") {
+            if line.starts_with("last location (coarse):")
+                || line.starts_with("last location coarse:")
+            {
                 if let Some(loc_start) = line.find('{') {
                     let loc_str = &line[loc_start..];
                     if let Some(location) = self.parse_location_coordinates(loc_str) {

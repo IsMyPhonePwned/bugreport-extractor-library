@@ -1,19 +1,47 @@
-//! Timeline export in **JSONL** (and JSON array) for tools like [Timesketch](https://timesketch.org),
-//! similar to `sysdiagnose-extractor-library`’s `timesketch` analyser output.
+//! Timeline export as **JSONL** (and a JSON event array) for tools like [Timesketch](https://timesketch.org),
+//! in the same spirit as the timeline JSONL export in the sibling **sysdiagnose-extractor-library** tree.
 //!
-//! Each line is one JSON object with Plaso/Timesketch-friendly fields:
-//! `message`, `datetime` (RFC3339), `timestamp_desc`, `timestamp` (epoch microseconds),
-//! `time_is_approximate`, `data_type`, `parser`, `bugreport_parser`, `event_time_binding`,
-//! plus parser-specific fields.
+//! # Row shape
 //!
-//! **`event_time_binding`** tells you whether `datetime` is a real event time from the record
-//! (`per_record`) or only the bugreport/dumpstate capture instant / wall clock (`snapshot_only`,
-//! `system_fallback`). Parsers such as **Process (ps/top)** never attach per-row times in the
-//! bugreport; those rows are `snapshot_only` so you can drop or tag them for strict Timesketch
-//! timelines. **`parser`** is the `ParserType` name (e.g. `Process`); **`bugreport_parser`** is the
-//! same identifier in lowercase for filters.
+//! Each line is one JSON object. At minimum it includes: `message`, `datetime` (RFC 3339),
+//! `timestamp_desc`, `timestamp` (epoch **microseconds**), `time_is_approximate`, `data_type`,
+//! **`parser`** (PascalCase [`ParserType`], e.g. `Process`),
+//! **`bugreport_parser`** (the same id in lowercase for queries),
+//! **`event_time_binding`** (one of `per_record`, `snapshot_only`, `system_fallback`), plus
+//! parser-specific fields merged from the source JSON.
+//!
+//! # What counts as an “event time”
+//!
+//! Not every row corresponds to an intrinsic timestamped occurrence in the bugreport text: some
+//! lines are **context** (lists, snapshots) where only a reference instant exists. Use
+//! **`event_time_binding`** to tell strict timelines apart from context-only rows:
+//!
+//! - **`per_record`** — `datetime` comes from this record (install log line, power history row,
+//!   tombstone field, …).
+//! - **`snapshot_only`** — `datetime` is **only** the dumpstate **capture** instant from the
+//!   bugreport header when that timestamp parses to UTC; if the header string does not parse,
+//!   `datetime` is that **raw header string** (as-is) and `time_is_approximate` is true. This is
+//!   **not** when the row “happened”. Exporter rows that use this binding include, among others:
+//!   **Process (ps/top)**, **memory** snapshots, **netstat-style sockets** and other network
+//!   listings (interfaces, stats, saved Wi‑Fi), **USB** topology / connected devices, **Bluetooth**
+//!   device lists, **battery** per-app summary lines, **power** reset reasons, **ANR** trace dumps
+//!   (when the trace has no per-file timestamp), and similar snapshot-style sections.
+//! - **`system_fallback`** — **no** usable dumpstate header timestamp was found (no header
+//!   section, or no `timestamp` field in the parsed header JSON). `datetime` is **wall clock at
+//!   export** (RFC 3339), with `time_is_approximate` true — same behavior as before this field
+//!   existed, now explicit in `event_time_binding`.
+//!
+//! # Volume limits
+//!
+//! Export is capped at **100,000** events total and **25,000** per parser so files stay bounded.
+//!
+//! # Epoch / 1970 garbage
+//!
+//! Rows whose `timestamp` (μs) is strictly before **1971-01-01 UTC**, or whose `datetime` parses to
+//! calendar year **1970**, are removed from `events` / `jsonl` / CSV as bogus Unix-epoch artifacts.
+//! The number removed is [`TimelineExport::skipped_epoch_timeline_events`].
 
-use chrono::{DateTime, NaiveDateTime, Utc};
+use chrono::{DateTime, Datelike, NaiveDateTime, Utc};
 use serde_json::{json, Map, Value};
 use std::error::Error;
 
@@ -23,10 +51,18 @@ const MAX_EVENTS_TOTAL: usize = 100_000;
 const MAX_EVENTS_PER_PARSER: usize = 25_000;
 const MAX_MESSAGE_CHARS: usize = 16_384;
 
+/// Microseconds at 1971-01-01 00:00:00 UTC — values below this are treated as bogus 1970-era junk.
+const MIN_TIMELINE_MICROS: i64 = 31_536_000_000_000;
+
 /// Parsed bugreport timeline: JSON array (`events`) plus newline-delimited JSON (`jsonl`).
+///
+/// See the [module-level documentation](crate::timeline) for field semantics, `event_time_binding`,
+/// export caps, and epoch-row filtering.
 #[derive(Debug, Clone)]
 pub struct TimelineExport {
     pub count: usize,
+    /// Rows removed because `timestamp` (μs) was before 1971-01-01 UTC or `datetime` parsed to 1970.
+    pub skipped_epoch_timeline_events: usize,
     pub events: Vec<Value>,
     pub jsonl: String,
 }
@@ -52,17 +88,50 @@ fn iso_to_micros(iso: &str) -> Option<i64> {
     parse_ts(iso).map(|d| d.timestamp_micros())
 }
 
+fn timestamp_micros_from_event(ev: &Value) -> Option<i64> {
+    let t = ev.get("timestamp")?;
+    if let Some(i) = t.as_i64() {
+        return Some(i);
+    }
+    if let Some(u) = t.as_u64() {
+        return i64::try_from(u).ok();
+    }
+    if let Some(s) = t.as_str() {
+        return s.trim().parse::<i64>().ok();
+    }
+    None
+}
+
+/// True when the row should not be sent to Timesketch (1970 / sub-1971 garbage).
+fn should_skip_epoch_garbage_timeline_event(ev: &Value) -> bool {
+    if let Some(us) = timestamp_micros_from_event(ev) {
+        return us < MIN_TIMELINE_MICROS;
+    }
+    let Some(ds) = ev.get("datetime").and_then(|x| x.as_str()) else {
+        return false;
+    };
+    parse_ts(ds)
+        .map(|dt| dt.year() < 1971)
+        .unwrap_or(false)
+}
+
 fn truncate_message(s: &str) -> String {
     s.chars().take(MAX_MESSAGE_CHARS).collect()
 }
 
 /// Reference time from the dumpstate header when a parser row has no intrinsic timestamp.
+///
+/// Drives `EventTimeBinding::SnapshotOnly` vs `EventTimeBinding::SystemFallback`: when
+/// `no_bugreport_header` is false, snapshot rows use this `datetime` (parsed header instant, or
+/// raw unparseable header string with `time_is_approximate`); when true, rows use wall clock at
+/// export (`SystemFallback`).
 #[derive(Debug, Clone)]
 pub struct BugreportFallbackTime {
     pub datetime: String,
-    /// True when the header timestamp string could not be normalized to RFC3339.
+    /// True when the header timestamp string could not be normalized to RFC3339 (raw string kept
+    /// in `datetime`), or when wall-clock fallback is used.
     pub time_is_approximate: bool,
-    /// True when no dumpstate header was found and `datetime` is the wall clock at export.
+    /// True when no usable header `timestamp` was found; `datetime` is then wall clock at export.
     pub no_bugreport_header: bool,
 }
 
@@ -102,9 +171,10 @@ fn fallback_from_header(
 pub enum EventTimeBinding {
     /// Timestamp comes from this record (install log line, tombstone field, battery history row, …).
     PerRecord,
-    /// `datetime` is only the bugreport capture / dumpstate reference time (e.g. ps list, sockets).
+    /// `datetime` is only the dumpstate capture instant from the header (or unparseable header
+    /// string as-is), e.g. ps list, sockets, ANR trace without file time.
     SnapshotOnly,
-    /// No header was available; `datetime` is the exporter wall clock.
+    /// No usable bugreport header timestamp; `datetime` is wall clock at export.
     SystemFallback,
 }
 
@@ -827,6 +897,9 @@ fn flatten_generic_json(
 }
 
 /// Build timeline events and JSONL from concurrent parser results (`run_parsers_concurrently` output).
+///
+/// Rows are sorted by `timestamp` (μs). See the [module-level documentation](crate::timeline) for
+/// required JSON fields, `event_time_binding`, and caps.
 pub fn export_timeline(
     results: &[(ParserType, Result<Value, Box<dyn Error + Send + Sync>>, std::time::Duration)],
 ) -> TimelineExport {
@@ -860,9 +933,19 @@ pub fn export_timeline(
         }
     }
 
+    let mut skipped_epoch_timeline_events = 0usize;
+    out.retain(|ev| {
+        if should_skip_epoch_garbage_timeline_event(ev) {
+            skipped_epoch_timeline_events += 1;
+            false
+        } else {
+            true
+        }
+    });
+
     out.sort_by(|a, b| {
-        let ta = a.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0);
-        let tb = b.get("timestamp").and_then(|x| x.as_i64()).unwrap_or(0);
+        let ta = timestamp_micros_from_event(a).unwrap_or(0);
+        let tb = timestamp_micros_from_event(b).unwrap_or(0);
         ta.cmp(&tb)
     });
 
@@ -870,6 +953,7 @@ pub fn export_timeline(
     let count = out.len();
     TimelineExport {
         count,
+        skipped_epoch_timeline_events,
         events: out,
         jsonl,
     }
@@ -890,6 +974,8 @@ fn events_to_jsonl(events: &[Value]) -> String {
 }
 
 /// Serialize timeline as a single JSON value (includes `events` array and `jsonl` string).
+///
+/// The embedded `note` summarizes row shape and `event_time_binding`; see [`crate::timeline`] for full detail.
 pub fn export_timeline_value(
     results: &[(ParserType, Result<Value, Box<dyn Error + Send + Sync>>, std::time::Duration)],
 ) -> Value {
@@ -897,9 +983,10 @@ pub fn export_timeline_value(
     json!({
         "timeline_exporter": "bugreport_extractor_library",
         "count": exp.count,
+        "skipped_epoch_timeline_events": exp.skipped_epoch_timeline_events,
         "events": exp.events,
         "jsonl": exp.jsonl,
-        "note": "Plaso/Timesketch-style rows: message, datetime, timestamp_desc, timestamp (μs), time_is_approximate, data_type, parser (PascalCase ParserType), bugreport_parser (lowercase), event_time_binding (per_record | snapshot_only | system_fallback). Use per_record for strict investigation timelines; snapshot_only marks rows (e.g. ps/process list) whose datetime is only the bugreport capture instant, not when the row occurred. Save jsonl to a .jsonl file for streaming import."
+        "note": "Plaso/Timesketch-style rows: message, datetime (RFC3339 when parseable; else raw string for unparseable header), timestamp_desc, timestamp (epoch μs), time_is_approximate, data_type, parser (PascalCase ParserType), bugreport_parser (lowercase), event_time_binding (per_record | snapshot_only | system_fallback), plus parser-specific fields. Rows with timestamp before 1971-01-01 UTC (or datetime in 1970) are dropped as bogus epoch garbage; see skipped_epoch_timeline_events. snapshot_only = dumpstate header capture instant only (or raw header time string); system_fallback = no usable header timestamp, wall clock at export. Export capped at 100k events total, 25k per parser. Save jsonl for streaming import."
     })
 }
 
@@ -993,6 +1080,111 @@ u:r:system_server:s0           system          1486  1486   878   25324084 37841
         assert_eq!(
             tomb.get("event_time_binding").and_then(|x| x.as_str()),
             Some("per_record")
+        );
+    }
+
+    #[test]
+    fn export_timeline_skips_epoch_garbage() {
+        let junk = json!({
+            "tombstones": [{
+                "timestamp": "1970-01-01 00:00:00",
+                "pid": 1,
+                "tid": 1,
+                "uid": 0,
+                "process_name": "bad",
+                "signal": "SIGSEGV",
+                "code": "0",
+                "fault_addr": "0x0"
+            }]
+        });
+        let good = json!({
+            "tombstones": [{
+                "timestamp": "2025-11-08 17:54:03",
+                "pid": 2,
+                "tid": 2,
+                "uid": 0,
+                "process_name": "ok",
+                "signal": "SIGSEGV",
+                "code": "0",
+                "fault_addr": "0x0"
+            }]
+        });
+        let results = vec![
+            (ParserType::Crash, Ok(junk), std::time::Duration::ZERO),
+            (ParserType::Crash, Ok(good), std::time::Duration::ZERO),
+        ];
+        let exp = export_timeline(&results);
+        assert!(
+            exp.skipped_epoch_timeline_events >= 1,
+            "expected at least one 1970-era row skipped"
+        );
+        for ev in &exp.events {
+            let us = timestamp_micros_from_event(ev).unwrap_or(i64::MAX);
+            assert!(
+                us >= MIN_TIMELINE_MICROS,
+                "every kept row must have timestamp >= 1971-01-01 UTC"
+            );
+        }
+        let ok_row = exp
+            .events
+            .iter()
+            .find(|e| e.get("process_name").and_then(|x| x.as_str()) == Some("ok"));
+        assert!(ok_row.is_some(), "valid tombstone row should be kept");
+    }
+
+    #[test]
+    fn export_timeline_snapshot_only_matches_header_capture() {
+        let header = json!({"timestamp": "2025-01-15 12:00:00"});
+        let procs = json!([{"pid": 1, "user": "u0_a1", "cmd": "system_server"}]);
+        let results = vec![
+            (ParserType::Header, Ok(header), std::time::Duration::ZERO),
+            (ParserType::Process, Ok(procs), std::time::Duration::ZERO),
+        ];
+        let exp = export_timeline(&results);
+        let proc_row = exp
+            .events
+            .iter()
+            .find(|e| e.get("bugreport_parser").and_then(|x| x.as_str()) == Some("process"))
+            .expect("process row");
+        assert_eq!(
+            proc_row
+                .get("event_time_binding")
+                .and_then(|x| x.as_str()),
+            Some("snapshot_only")
+        );
+        assert_eq!(
+            proc_row.get("datetime").and_then(|x| x.as_str()),
+            Some("2025-01-15T12:00:00+00:00")
+        );
+        assert_eq!(
+            proc_row.get("time_is_approximate").and_then(|x| x.as_bool()),
+            Some(false)
+        );
+    }
+
+    #[test]
+    fn export_timeline_system_fallback_when_header_has_no_timestamp() {
+        let header = json!({"build": "TEST"});
+        let procs = json!([{"pid": 1, "user": "root", "cmd": "init"}]);
+        let results = vec![
+            (ParserType::Header, Ok(header), std::time::Duration::ZERO),
+            (ParserType::Process, Ok(procs), std::time::Duration::ZERO),
+        ];
+        let exp = export_timeline(&results);
+        let proc_row = exp
+            .events
+            .iter()
+            .find(|e| e.get("bugreport_parser").and_then(|x| x.as_str()) == Some("process"))
+            .expect("process row");
+        assert_eq!(
+            proc_row
+                .get("event_time_binding")
+                .and_then(|x| x.as_str()),
+            Some("system_fallback")
+        );
+        assert_eq!(
+            proc_row.get("time_is_approximate").and_then(|x| x.as_bool()),
+            Some(true)
         );
     }
 }
