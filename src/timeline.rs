@@ -75,11 +75,37 @@ fn parse_ts(timestamp: &str) -> Option<DateTime<Utc>> {
     if let Ok(dt) = DateTime::parse_from_rfc3339(t) {
         return Some(dt.with_timezone(&Utc));
     }
-    if let Ok(naive) = NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S%.3f") {
-        return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+    for fmt in [
+        "%Y-%m-%d %H:%M:%S%.3f%#z",
+        "%Y-%m-%d %H:%M:%S%#z",
+        "%Y-%m-%d %H:%M:%S%.3f",
+        "%Y-%m-%d %H:%M:%S",
+        "%y/%m/%d %H:%M:%S",
+    ] {
+        if let Ok(dt) = DateTime::parse_from_str(t, fmt) {
+            return Some(dt.with_timezone(&Utc));
+        }
+        if let Ok(naive) = NaiveDateTime::parse_from_str(t, fmt) {
+            return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+        }
     }
-    if let Ok(naive) = NaiveDateTime::parse_from_str(t, "%Y-%m-%d %H:%M:%S") {
-        return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+    None
+}
+
+/// Combine reset-block `entry_ts` (`25/12/08 22:41:50`, YY/MM/DD) with per-line `10:00:24+0100`.
+fn parse_power_event_ts(event_ts: &str, entry_ts: Option<&str>) -> Option<DateTime<Utc>> {
+    if let Some(dt) = parse_ts(event_ts) {
+        return Some(dt);
+    }
+    let anchor = entry_ts.and_then(parse_ts)?;
+    let t = event_ts.trim();
+    if let Ok(dt) = DateTime::parse_from_str(t, "%H:%M:%S%#z") {
+        let combined = format!(
+            "{} {}",
+            anchor.format("%Y-%m-%d"),
+            dt.format("%H:%M:%S%#z")
+        );
+        return parse_ts(&combined);
     }
     None
 }
@@ -257,7 +283,10 @@ fn flatten_header(
     };
     let mut parts: Vec<String> = Vec::new();
     for (k, val) in obj {
-        if k == "other_lines" {
+        if k == "other_lines" || k == "timestamp" {
+            continue;
+        }
+        if val.is_array() || val.is_object() {
             continue;
         }
         parts.push(format!("{k}={}", val.as_str().unwrap_or(&val.to_string())));
@@ -416,6 +445,119 @@ fn flatten_battery(
     }
 }
 
+fn power_row_time(
+    ts: &str,
+    ctx: &BugreportFallbackTime,
+    snap: EventTimeBinding,
+) -> (String, bool, EventTimeBinding) {
+    if let Some(dt) = parse_ts(ts) {
+        (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+    } else {
+        (
+            ctx.datetime.clone(),
+            ctx.time_is_approximate,
+            snap,
+        )
+    }
+}
+
+fn power_history_event_time(
+    event_ts: &str,
+    entry_ts: Option<&str>,
+    ctx: &BugreportFallbackTime,
+    snap: EventTimeBinding,
+) -> (String, bool, EventTimeBinding) {
+    if let Some(dt) = parse_power_event_ts(event_ts, entry_ts) {
+        return (dt.to_rfc3339(), false, EventTimeBinding::PerRecord);
+    }
+    if let Some(ets) = entry_ts {
+        if let Some(dt) = parse_ts(ets) {
+            return (dt.to_rfc3339(), false, EventTimeBinding::PerRecord);
+        }
+    }
+    power_row_time(event_ts, ctx, snap)
+}
+
+fn flatten_power_history_event(
+    o: &Map<String, Value>,
+    entry_ts: Option<&str>,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
+    let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+    let (datetime, approx, binding) = power_history_event_time(ts, entry_ts, ctx, snap);
+    let et = o.get("event_type").and_then(|x| x.as_str()).unwrap_or("");
+    let flags = o.get("flags").and_then(|x| x.as_str()).unwrap_or("");
+    let details = o.get("details").and_then(|x| x.as_str()).unwrap_or("");
+    let msg = if details.is_empty() {
+        format!("Power event: {et}")
+    } else if flags.is_empty() {
+        format!("Power event: {et} — {details}")
+    } else {
+        format!("Power event: {et} [{flags}] — {details}")
+    };
+    let mut extra = o.clone();
+    if let Some(ets) = entry_ts {
+        extra.insert("entry_timestamp".into(), json!(ets));
+    }
+    push_event(
+        out,
+        global,
+        pb,
+        msg,
+        datetime,
+        "power_history",
+        approx,
+        ParserType::Power,
+        "android:bugreport:power",
+        binding,
+        extra,
+    );
+}
+
+fn flatten_power_reset_reason(
+    o: &Map<String, Value>,
+    entry_ts: Option<&str>,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
+    let reason = o.get("reason").and_then(|x| x.as_str()).unwrap_or("");
+    if reason.is_empty() {
+        return;
+    }
+    let mut row = o.clone();
+    if let Some(ts) = entry_ts {
+        row.insert("entry_timestamp".into(), json!(ts));
+    }
+    let (datetime, approx, binding) = entry_ts
+        .map(|ts| power_row_time(ts, ctx, snap))
+        .unwrap_or((
+            ctx.datetime.clone(),
+            ctx.time_is_approximate,
+            snap,
+        ));
+    let msg = format!("Reset reason: {reason}");
+    push_event(
+        out,
+        global,
+        pb,
+        msg,
+        datetime,
+        "reset_reason",
+        approx,
+        ParserType::Power,
+        "android:bugreport:reset_reason",
+        binding,
+        row,
+    );
+}
+
 fn flatten_power(
     v: &Value,
     ctx: &BugreportFallbackTime,
@@ -423,34 +565,12 @@ fn flatten_power(
     global: &mut usize,
     pb: &mut usize,
 ) {
-    let snap = binding_when_row_has_no_parsed_time(ctx);
     if let Some(hist) = v.get("power_history").and_then(|a| a.as_array()) {
         for e in hist {
             let Some(o) = e.as_object() else {
                 continue;
             };
-            let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
-            let row_parsed = parse_ts(ts);
-            let (datetime, approx, binding) = if let Some(dt) = row_parsed {
-                (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
-            } else {
-                (ctx.datetime.clone(), ctx.time_is_approximate, snap)
-            };
-            let et = o.get("event_type").and_then(|x| x.as_str()).unwrap_or("");
-            let msg = format!("Power event: {et}");
-            push_event(
-                out,
-                global,
-                pb,
-                msg,
-                datetime,
-                "power_history",
-                approx,
-                ParserType::Power,
-                "android:bugreport:power",
-                binding,
-                o.clone(),
-            );
+            flatten_power_history_event(o, None, ctx, out, global, pb);
         }
     }
     if let Some(reasons) = v.get("reset_reasons").and_then(|a| a.as_array()) {
@@ -458,21 +578,30 @@ fn flatten_power(
             let Some(o) = r.as_object() else {
                 continue;
             };
-            let reason = o.get("reason").and_then(|x| x.as_str()).unwrap_or("");
-            let msg = format!("Reset reason: {reason}");
-            push_event(
-                out,
-                global,
-                pb,
-                msg,
-                ctx.datetime.clone(),
-                "reset_reason",
-                ctx.time_is_approximate,
-                ParserType::Power,
-                "android:bugreport:reset_reason",
-                snap,
-                o.clone(),
-            );
+            flatten_power_reset_reason(o, None, ctx, out, global, pb);
+        }
+    }
+
+    // PowerParser map format: { "25/02/20 10:07:29": { reason, stack_trace, history_events } }
+    if let Some(obj) = v.as_object() {
+        for (entry_ts, entry) in obj {
+            if entry_ts == "power_history" || entry_ts == "reset_reasons" {
+                continue;
+            }
+            let Some(entry_obj) = entry.as_object() else {
+                continue;
+            };
+            if entry_obj.contains_key("reason") || entry_obj.contains_key("stack_trace") {
+                flatten_power_reset_reason(entry_obj, Some(entry_ts), ctx, out, global, pb);
+            }
+            if let Some(events) = entry_obj.get("history_events").and_then(|a| a.as_array()) {
+                for e in events {
+                    let Some(o) = e.as_object() else {
+                        continue;
+                    };
+                    flatten_power_history_event(o, Some(entry_ts), ctx, out, global, pb);
+                }
+            }
         }
     }
 }
@@ -862,6 +991,324 @@ fn flatten_package(
     }
 }
 
+fn flatten_authentication(
+    v: &Value,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
+    let Some(events) = v.get("events").and_then(|a| a.as_array()) else {
+        flatten_generic_json(ParserType::Authentication, v, ctx, out, global, pb);
+        return;
+    };
+    if events.is_empty() {
+        return;
+    }
+    for e in events {
+        let Some(mut o) = e.as_object().cloned() else {
+            continue;
+        };
+        if let Some(uid) = o.get("user_id") {
+            o.insert("user".into(), uid.clone());
+        }
+        let auth_type = o.get("auth_type").and_then(|x| x.as_str()).unwrap_or("");
+        let user = o
+            .get("user_id")
+            .map(|x| x.to_string())
+            .unwrap_or_else(|| "?".into());
+        let success = o.get("success").and_then(|x| x.as_bool()).unwrap_or(true);
+        let status = if success { "success" } else { "failed" };
+        let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let (datetime, approx, binding) = power_row_time(ts, ctx, snap);
+        let msg = if auth_type.is_empty() {
+            format!("Authentication {status}: user {user}")
+        } else {
+            format!("Authentication {status}: user {user} ({auth_type})")
+        };
+        o.insert("event_type".into(), json!("authentication_event"));
+        o.insert("status".into(), json!(status));
+        push_event(
+            out,
+            global,
+            pb,
+            msg,
+            datetime,
+            "authentication_event",
+            approx,
+            ParserType::Authentication,
+            "android:bugreport:authentication",
+            binding,
+            o,
+        );
+    }
+}
+
+fn flatten_adb(
+    v: &Value,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let binding = binding_when_row_has_no_parsed_time(ctx);
+    let Some(obj) = v.as_object() else {
+        flatten_generic_json(ParserType::Adb, v, ctx, out, global, pb);
+        return;
+    };
+    if obj.is_empty() {
+        return;
+    }
+
+    let mut summary = Map::new();
+    for (k, val) in obj {
+        if k != "debugging_manager" {
+            summary.insert(k.clone(), val.clone());
+        }
+    }
+
+    if let Some(dm) = obj.get("debugging_manager").and_then(|x| x.as_object()) {
+        let connected = dm
+            .get("connected_to_adb")
+            .and_then(|x| x.as_bool())
+            .unwrap_or(false);
+        summary.insert("connected_to_adb".into(), json!(connected));
+        summary.insert("event_type".into(), json!("adb_status"));
+        let msg = format!("ADB connected={connected}");
+        push_event(
+            out,
+            global,
+            pb,
+            msg,
+            ctx.datetime.clone(),
+            "adb_status",
+            ctx.time_is_approximate,
+            ParserType::Adb,
+            "android:bugreport:adb",
+            binding,
+            summary,
+        );
+
+        if let Some(keys) = dm.get("user_keys_parsed").and_then(|a| a.as_array()) {
+            for key in keys {
+                let Some(mut krow) = key.as_object().cloned() else {
+                    continue;
+                };
+                let id = krow
+                    .get("identifier")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("authorized key")
+                    .to_string();
+                krow.insert("event_type".into(), json!("adb_key"));
+                push_event(
+                    out,
+                    global,
+                    pb,
+                    format!("ADB authorized key: {id}"),
+                    ctx.datetime.clone(),
+                    "adb_key",
+                    ctx.time_is_approximate,
+                    ParserType::Adb,
+                    "android:bugreport:adb_key",
+                    binding,
+                    krow,
+                );
+            }
+        }
+
+        if let Some(ks) = dm.get("keystore_parsed").and_then(|x| x.as_object()) {
+            let mut krow = ks.clone();
+            krow.insert("event_type".into(), json!("adb_keystore"));
+            let has_key = ks
+                .get("has_adb_key")
+                .and_then(|x| x.as_bool())
+                .unwrap_or(false);
+            push_event(
+                out,
+                global,
+                pb,
+                format!("ADB keystore (has_key={has_key})"),
+                ctx.datetime.clone(),
+                "adb_keystore",
+                ctx.time_is_approximate,
+                ParserType::Adb,
+                "android:bugreport:adb_keystore",
+                binding,
+                krow,
+            );
+        }
+        return;
+    }
+
+    flatten_generic_json(ParserType::Adb, v, ctx, out, global, pb);
+}
+
+fn flatten_privacy(
+    v: &Value,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let binding = binding_when_row_has_no_parsed_time(ctx);
+    let providers = v
+        .pointer("/privacy/location_providers")
+        .and_then(|a| a.as_array());
+    let Some(providers) = providers else {
+        flatten_generic_json(ParserType::Privacy, v, ctx, out, global, pb);
+        return;
+    };
+    if providers.is_empty() {
+        return;
+    }
+    for p in providers {
+        let Some(o) = p.as_object() else {
+            continue;
+        };
+        let name = o
+            .get("provider_name")
+            .or_else(|| o.get("name"))
+            .and_then(|x| x.as_str())
+            .unwrap_or("location provider");
+        let mut row = o.clone();
+        row.insert("event_type".into(), json!("location_provider"));
+        push_event(
+            out,
+            global,
+            pb,
+            format!("Location provider: {name}"),
+            ctx.datetime.clone(),
+            "location_provider",
+            ctx.time_is_approximate,
+            ParserType::Privacy,
+            "android:bugreport:privacy",
+            binding,
+            row,
+        );
+    }
+}
+
+fn flatten_vpn(
+    v: &Value,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let binding = binding_when_row_has_no_parsed_time(ctx);
+    let mut emitted = false;
+    if let Some(vpns) = v.get("current_vpns").and_then(|x| x.as_object()) {
+        for (uid, vpn) in vpns {
+            let Some(mut o) = vpn.as_object().cloned() else {
+                continue;
+            };
+            o.insert("user_id".into(), json!(uid));
+            o.insert("event_type".into(), json!("vpn_session"));
+            let pkg = o
+                .get("package_name")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown");
+            push_event(
+                out,
+                global,
+                pb,
+                format!("VPN active: {pkg} (user {uid})"),
+                ctx.datetime.clone(),
+                "vpn_session",
+                ctx.time_is_approximate,
+                ParserType::Vpn,
+                "android:bugreport:vpn",
+                binding,
+                o,
+            );
+            emitted = true;
+        }
+    }
+    if !emitted {
+        flatten_generic_json(ParserType::Vpn, v, ctx, out, global, pb);
+    }
+}
+
+fn flatten_device_policy(
+    v: &Value,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let binding = binding_when_row_has_no_parsed_time(ctx);
+    let Some(obj) = v.as_object() else {
+        flatten_generic_json(ParserType::DevicePolicy, v, ctx, out, global, pb);
+        return;
+    };
+    if obj.is_empty() {
+        return;
+    }
+
+    let mut emitted = false;
+    for (key, val) in obj {
+        if key == "profile_owner" {
+            if let Some(po) = val.as_object() {
+                let mut row = po.clone();
+                row.insert("event_type".into(), json!("profile_owner"));
+                let pkg = po
+                    .get("package")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("unknown");
+                push_event(
+                    out,
+                    global,
+                    pb,
+                    format!("Profile owner: {pkg}"),
+                    ctx.datetime.clone(),
+                    "profile_owner",
+                    ctx.time_is_approximate,
+                    ParserType::DevicePolicy,
+                    "android:bugreport:device_policy",
+                    binding,
+                    row,
+                );
+                emitted = true;
+            }
+            continue;
+        }
+        if !key.starts_with("device_admins") {
+            continue;
+        }
+        let Some(admins) = val.as_array() else {
+            continue;
+        };
+        for admin in admins {
+            let Some(mut o) = admin.as_object().cloned() else {
+                continue;
+            };
+            o.insert("event_type".into(), json!("device_admin"));
+            let pkg = o
+                .get("package")
+                .and_then(|x| x.as_str())
+                .unwrap_or("unknown");
+            push_event(
+                out,
+                global,
+                pb,
+                format!("Device admin: {pkg}"),
+                ctx.datetime.clone(),
+                "device_admin",
+                ctx.time_is_approximate,
+                ParserType::DevicePolicy,
+                "android:bugreport:device_policy",
+                binding,
+                o,
+            );
+            emitted = true;
+        }
+    }
+    if !emitted {
+        flatten_generic_json(ParserType::DevicePolicy, v, ctx, out, global, pb);
+    }
+}
+
 fn flatten_generic_json(
     pt: ParserType,
     v: &Value,
@@ -923,13 +1370,15 @@ pub fn export_timeline(
             ParserType::Network => flatten_network(v, &ctx, &mut out, &mut global, &mut pb),
             ParserType::Bluetooth => flatten_bluetooth(v, &ctx, &mut out, &mut global, &mut pb),
             ParserType::Package => flatten_package(v, &ctx, &mut out, &mut global, &mut pb),
-            ParserType::DevicePolicy
-            | ParserType::Adb
-            | ParserType::Authentication
-            | ParserType::Vpn
-            | ParserType::Privacy => {
-                flatten_generic_json(*pt, v, &ctx, &mut out, &mut global, &mut pb);
+            ParserType::DevicePolicy => {
+                flatten_device_policy(v, &ctx, &mut out, &mut global, &mut pb);
             }
+            ParserType::Adb => flatten_adb(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Authentication => {
+                flatten_authentication(v, &ctx, &mut out, &mut global, &mut pb);
+            }
+            ParserType::Vpn => flatten_vpn(v, &ctx, &mut out, &mut global, &mut pb),
+            ParserType::Privacy => flatten_privacy(v, &ctx, &mut out, &mut global, &mut pb),
         }
     }
 
@@ -995,9 +1444,50 @@ mod tests {
     use super::*;
     use crate::parsers::ParserType;
     use crate::run_parsers_concurrently;
-    use crate::parsers::{HeaderParser, ProcessParser};
+    use crate::parsers::{HeaderParser, PowerParser, ProcessParser};
     use serde_json::json;
     use std::sync::Arc;
+
+    #[test]
+    fn export_timeline_power_history_from_parser_map() {
+        let data = br"
+------ POWER OFF RESET REASON (/data/log/power_off_reset_reason.txt: 2025-03-24 13:43:33) ------
+25/02/20 10:07:29
+reason : no power
+java.lang.Exception: It is not an exception!!
+\tat com.android.server.power.ShutdownThread.shutdownInner(ShutdownThread.java:336)
+10:07:32  2025-02-20 10:07:32+0100 | SHUTDOWN | | REASON: no power [39]
+2025-02-20 11:40:46+0100 |    ON    | NP    | A348BXXU7CXK1 [40]
+------ END ------
+        ";
+        let parsers = vec![(ParserType::Power, Box::new(PowerParser::new().unwrap()) as _)];
+        let content: Arc<[u8]> = Arc::from(data.as_slice());
+        let results = run_parsers_concurrently(content, parsers);
+        let exp = export_timeline(&results);
+        assert!(exp.count >= 3, "expected reset + 2 history events, got {}", exp.count);
+        let history = exp
+            .events
+            .iter()
+            .filter(|e| {
+                e.get("timestamp_desc")
+                    .and_then(|x| x.as_str())
+                    == Some("power_history")
+            })
+            .count();
+        assert_eq!(history, 2);
+        let reset = exp
+            .events
+            .iter()
+            .filter(|e| {
+                e.get("timestamp_desc")
+                    .and_then(|x| x.as_str())
+                    == Some("reset_reason")
+            })
+            .count();
+        assert_eq!(reset, 1);
+        assert!(exp.jsonl.contains("SHUTDOWN"));
+        assert!(exp.jsonl.contains("no power"));
+    }
 
     #[test]
     fn export_timeline_includes_header_and_process() {

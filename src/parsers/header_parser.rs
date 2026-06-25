@@ -19,6 +19,16 @@ impl HeaderParser {
     }
 }
 
+/// Trim dumpstate header values (carrier lines often end with a stray comma).
+fn clean_header_value(value: &str) -> String {
+    let mut v = value.trim().to_string();
+    while v.ends_with(',') {
+        v.pop();
+        v = v.trim_end().to_string();
+    }
+    v
+}
+
 impl Parser for HeaderParser {
     fn parse(&self, data: &[u8]) -> Result<Value, Box<dyn Error + Send + Sync>> {
         let content = String::from_utf8_lossy(data);
@@ -71,9 +81,9 @@ impl Parser for HeaderParser {
                 // Try to split on ": " to extract key-value pairs
                 if let Some((key, value)) = trimmed.split_once(": ") {
                     let key = key.trim();
-                    let value = value.trim();
+                    let value = clean_header_value(value);
                     // Only add if key is not empty and doesn't already exist
-                    if !key.is_empty() {
+                    if !key.is_empty() && !value.is_empty() {
                         result_map.insert(key.to_string(), json!(value));
                     }
                 } else {
@@ -205,7 +215,7 @@ Dumpstate info: id=6 pid=30572 dry_run=0 parallel_run=1 args=/system/bin/dumpsta
         assert_eq!(result["Build fingerprint"], "'samsung/a34xeea/a34x:14/UP1A.231005.007/A346BXXS9CYD1:user/release-keys'");
         assert_eq!(result["Bootloader"], "A346BXXS9CYD1");
         assert_eq!(result["Radio"], "A346BXXS9CYD1,A346BXXS9CYD1");
-        assert_eq!(result["Network"], "NL KPN,");
+        assert_eq!(result["Network"], "NL KPN");
         assert_eq!(result["Module Metadata version"], "360969444");
         assert_eq!(result["Android SDK version"], "34");
         assert_eq!(result["SDK extensions"], "[ad_services=11, r=11, s=11, t=11, u=11]");
