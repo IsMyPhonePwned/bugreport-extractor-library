@@ -1,6 +1,18 @@
 use super::Parser;
 use serde_json::{json, Map, Value};
 use std::error::Error;
+use std::net::{IpAddr, Ipv6Addr};
+
+/// Parsed IP with version metadata for socket JSON output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct IpEndpointMeta {
+    /// Canonical normalized address (full IPv6 literal, including `::ffff:…` when mapped).
+    ip: String,
+    /// `ipv4`, `ipv6`, `ipv4_mapped` (IPv4-mapped IPv6, RFC 4291), `wildcard`, or `unknown`.
+    version: &'static str,
+    /// Plain IPv4 embedded in `::ffff:a.b.c.d`; absent for native IPv4/IPv6.
+    embedded_ipv4: Option<String>,
+}
 
 #[derive(Debug, Clone)]
 struct SocketConnection {
@@ -194,17 +206,32 @@ impl NetworkParser {
 
     fn parse_ip_address(hex_str: &str) -> String {
         // Parse IP address from hex format (e.g., "0100007F" = 127.0.0.1)
-        // Format is typically 4 bytes in hex, but could be IPv6 (16 bytes)
+        // IPv6 in /proc/net/tcp6 uses 32 hex digits (four little-endian 32-bit words).
         if hex_str.len() == 8 {
-            // IPv4: 4 bytes
+            // IPv4: 4 bytes in network byte order (stored as one little-endian u32 in /proc)
             if let (Ok(b1), Ok(b2), Ok(b3), Ok(b4)) = (
                 u8::from_str_radix(&hex_str[0..2], 16),
                 u8::from_str_radix(&hex_str[2..4], 16),
                 u8::from_str_radix(&hex_str[4..6], 16),
                 u8::from_str_radix(&hex_str[6..8], 16),
             ) {
-                return format!("{}.{}.{}.{}", b4, b3, b2, b1); // Network byte order
+                return format!("{}.{}.{}.{}", b4, b3, b2, b1);
             }
+        }
+        if hex_str.len() == 32 {
+            let mut octets = [0u8; 16];
+            for (i, chunk) in hex_str.as_bytes().chunks(8).enumerate() {
+                if i >= 4 {
+                    break;
+                }
+                let word_str = std::str::from_utf8(chunk).unwrap_or("");
+                if let Ok(word) = u32::from_str_radix(word_str, 16) {
+                    octets[i * 4..(i + 1) * 4].copy_from_slice(&word.to_le_bytes());
+                } else {
+                    return hex_str.to_string();
+                }
+            }
+            return Ipv6Addr::from(octets).to_string();
         }
         hex_str.to_string()
     }
@@ -220,24 +247,122 @@ impl NetworkParser {
         hex_str.to_string()
     }
 
-    // Parse address:port string and return (address, port)
-    // Handles formats like "192.168.1.1:8080", "[::1]:8080", "*:*", "0.0.0.0:0"
-    fn parse_address_port(addr_port: &str) -> (String, Option<u16>) {
-        // Handle IPv6 addresses in brackets: [::1]:8080
-        if addr_port.starts_with('[') {
-            if let Some(bracket_end) = addr_port.find(']') {
-                if let Some(colon_after_bracket) = addr_port[bracket_end + 1..].find(':') {
-                    let ip = addr_port[1..bracket_end].to_string();
-                    let port_str = &addr_port[bracket_end + 1 + colon_after_bracket + 1..];
-                    let port = port_str.parse::<u16>().ok();
-                    return (ip, port);
+    /// Classify an IP literal for socket fields.
+    ///
+    /// `::ffff:142.250.110.188` is **not** the same as `142.250.110.188`: it is IPv4-mapped IPv6
+    /// (`ipv4_mapped`). We keep the full IPv6 form in `ip` and expose the embedded IPv4 separately.
+    fn classify_ip(ip: &str) -> IpEndpointMeta {
+        if ip == "*" {
+            return IpEndpointMeta {
+                ip: "*".to_string(),
+                version: "wildcard",
+                embedded_ipv4: None,
+            };
+        }
+        if ip.is_empty() {
+            return IpEndpointMeta {
+                ip: String::new(),
+                version: "unknown",
+                embedded_ipv4: None,
+            };
+        }
+        match ip.parse::<IpAddr>() {
+            Ok(IpAddr::V4(v4)) => IpEndpointMeta {
+                ip: v4.to_string(),
+                version: "ipv4",
+                embedded_ipv4: None,
+            },
+            Ok(IpAddr::V6(v6)) => {
+                if let Some(v4) = v6.to_ipv4_mapped() {
+                    IpEndpointMeta {
+                        ip: v6.to_string(),
+                        version: "ipv4_mapped",
+                        embedded_ipv4: Some(v4.to_string()),
+                    }
+                } else {
+                    IpEndpointMeta {
+                        ip: v6.to_string(),
+                        version: "ipv6",
+                        embedded_ipv4: None,
+                    }
                 }
             }
+            Err(_) => IpEndpointMeta {
+                ip: ip.to_string(),
+                version: "unknown",
+                embedded_ipv4: None,
+            },
         }
-        
-        // Handle regular format: address:port or *:*
+    }
+
+    /// Normalize a parsed IP literal (`::`, `::ffff:142.250.110.188`, `*`, …).
+    fn normalize_ip(ip: &str) -> String {
+        Self::classify_ip(ip).ip
+    }
+
+    fn insert_ip_endpoint_json(obj: &mut Map<String, Value>, side: &str, ip: &str) {
+        let meta = Self::classify_ip(ip);
+        obj.insert(format!("{side}_ip"), json!(meta.ip));
+        obj.insert(format!("{side}_ip_version"), json!(meta.version));
+        if let Some(v4) = meta.embedded_ipv4 {
+            obj.insert(format!("{side}_ipv4"), json!(v4));
+        }
+    }
+
+    /// Format IP + port the way netstat/ss print them (brackets for IPv6 only).
+    fn format_address_port(ip: &str, port: Option<u16>) -> String {
+        if ip == "*" {
+            return match port {
+                Some(p) => format!("*:{p}"),
+                None => "*:*".to_string(),
+            };
+        }
+        let host = match ip.parse::<IpAddr>() {
+            Ok(IpAddr::V4(v4)) => v4.to_string(),
+            Ok(IpAddr::V6(v6)) => format!("[{v6}]"),
+            Err(_) if ip.contains(':') => format!("[{ip}]"),
+            Err(_) => ip.to_string(),
+        };
+        match port {
+            Some(p) => format!("{host}:{p}"),
+            None => host,
+        }
+    }
+
+    // Parse address:port string and return (normalized_ip, port).
+    // Handles "192.168.1.1:8080", "[::1]:8080", "[::]", "[::ffff:142.250.110.188]:443", "*:*".
+    fn parse_address_port(addr_port: &str) -> (String, Option<u16>) {
+        let addr_port = addr_port.trim();
+        if addr_port.is_empty() || addr_port == "*:*" {
+            return ("*".to_string(), None);
+        }
+        if addr_port == "*" {
+            return ("*".to_string(), None);
+        }
+
+        // Bracketed IPv6: [::], [::1]:8080, [::ffff:1.2.3.4]:443
+        if let Some(rest) = addr_port.strip_prefix('[') {
+            if let Some(bracket_end) = rest.find(']') {
+                let ip = Self::normalize_ip(&rest[..bracket_end]);
+                let after = rest[bracket_end + 1..].trim_start();
+                if after.is_empty() {
+                    return (ip, None);
+                }
+                if let Some(port_str) = after.strip_prefix(':') {
+                    let port = if port_str == "*" || port_str.is_empty() {
+                        None
+                    } else {
+                        port_str.parse::<u16>().ok()
+                    };
+                    return (ip, port);
+                }
+                return (ip, None);
+            }
+        }
+
+        // IPv4 / hostname — last colon separates port (host part has no colons).
         if let Some(colon_pos) = addr_port.rfind(':') {
-            let address = addr_port[..colon_pos].to_string();
+            let address = Self::normalize_ip(&addr_port[..colon_pos]);
             let port_str = &addr_port[colon_pos + 1..];
             let port = if port_str == "*" || port_str.is_empty() {
                 None
@@ -246,9 +371,27 @@ impl NetworkParser {
             };
             (address, port)
         } else {
-            // No port found, just address
-            (addr_port.to_string(), None)
+            (Self::normalize_ip(addr_port), None)
         }
+    }
+
+    /// Parse and normalize local/remote address fields for a socket row.
+    fn parse_socket_endpoints(
+        local_raw: &str,
+        remote_raw: &str,
+    ) -> (String, String, Option<u16>, String, String, Option<u16>) {
+        let (local_ip, local_port) = Self::parse_address_port(local_raw);
+        let (remote_ip, remote_port) = Self::parse_address_port(remote_raw);
+        let local_address = Self::format_address_port(&local_ip, local_port);
+        let remote_address = Self::format_address_port(&remote_ip, remote_port);
+        (
+            local_address,
+            local_ip,
+            local_port,
+            remote_address,
+            remote_ip,
+            remote_port,
+        )
     }
 
     /// Parse WiFi scanner service dump section
@@ -620,14 +763,14 @@ impl Parser for NetworkParser {
                             }
                         }
 
-                        // Parse addresses and ports
-                        let (local_ip, local_port) = Self::parse_address_port(&local_addr);
-                        let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
+                        // Parse addresses and ports (normalize IPv6 bracket notation)
+                        let (local_address, local_ip, local_port, remote_address, remote_ip, remote_port) =
+                            Self::parse_socket_endpoints(&local_addr, &remote_addr);
 
                         let socket = SocketConnection {
                             protocol,
-                            local_address: local_addr,
-                            remote_address: remote_addr,
+                            local_address,
+                            remote_address,
                             local_ip: Some(local_ip),
                             local_port,
                             remote_ip: Some(remote_ip),
@@ -670,21 +813,30 @@ impl Parser for NetworkParser {
                             (remote_hex, "0000")
                         };
 
-                        let local_addr = format!("{}:{}", 
+                        let local_addr = format!(
+                            "{}:{}",
                             Self::parse_ip_address(local_ip_hex),
-                            Self::parse_port(local_port_hex));
-                        let remote_addr = format!("{}:{}",
+                            Self::parse_port(local_port_hex)
+                        );
+                        let remote_addr = format!(
+                            "{}:{}",
                             Self::parse_ip_address(remote_ip_hex),
-                            Self::parse_port(remote_port_hex));
+                            Self::parse_port(remote_port_hex)
+                        );
 
-                        // Parse addresses and ports
-                        let (local_ip, local_port) = Self::parse_address_port(&local_addr);
-                        let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
+                        let (local_address, local_ip, local_port, remote_address, remote_ip, remote_port) =
+                            Self::parse_socket_endpoints(&local_addr, &remote_addr);
+
+                        let protocol = if local_ip_hex.len() == 32 || remote_ip_hex.len() == 32 {
+                            "tcp6".to_string()
+                        } else {
+                            "tcp".to_string()
+                        };
 
                         let socket = SocketConnection {
-                            protocol: "tcp".to_string(),
-                            local_address: local_addr,
-                            remote_address: remote_addr,
+                            protocol,
+                            local_address,
+                            remote_address,
                             local_ip: Some(local_ip),
                             local_port,
                             remote_ip: Some(remote_ip),
@@ -778,14 +930,14 @@ impl Parser for NetworkParser {
                                 }
                             }
                             
-                            // Parse addresses and ports
-                            let (local_ip, local_port) = Self::parse_address_port(&local_addr);
-                            let (remote_ip, remote_port) = Self::parse_address_port(&remote_addr);
+                            // Parse addresses and ports (normalize IPv6 bracket notation)
+                            let (local_address, local_ip, local_port, remote_address, remote_ip, remote_port) =
+                                Self::parse_socket_endpoints(&local_addr, &remote_addr);
 
                             current_socket = Some(SocketConnection {
                                 protocol,
-                                local_address: local_addr,
-                                remote_address: remote_addr,
+                                local_address,
+                                remote_address,
                                 local_ip: Some(local_ip),
                                 local_port,
                                 remote_ip: Some(remote_ip),
@@ -1257,15 +1409,14 @@ impl Parser for NetworkParser {
                 // Keep combined format for backward compatibility
                 obj.insert("local_address".to_string(), json!(s.local_address));
                 obj.insert("remote_address".to_string(), json!(s.remote_address));
-                // Add separate IP and port fields
                 if let Some(ref local_ip) = s.local_ip {
-                    obj.insert("local_ip".to_string(), json!(local_ip));
+                    Self::insert_ip_endpoint_json(&mut obj, "local", local_ip);
                 }
                 if let Some(local_port) = s.local_port {
                     obj.insert("local_port".to_string(), json!(local_port));
                 }
                 if let Some(ref remote_ip) = s.remote_ip {
-                    obj.insert("remote_ip".to_string(), json!(remote_ip));
+                    Self::insert_ip_endpoint_json(&mut obj, "remote", remote_ip);
                 }
                 if let Some(remote_port) = s.remote_port {
                     obj.insert("remote_port".to_string(), json!(remote_port));
@@ -1404,6 +1555,103 @@ impl Parser for NetworkParser {
 mod tests {
     use super::*;
     use crate::parsers::Parser;
+
+    #[test]
+    fn test_parse_address_port_ipv6() {
+        let (ip, port) = NetworkParser::parse_address_port("[::]");
+        assert_eq!(ip, "::");
+        assert_eq!(port, None);
+
+        let (ip, port) = NetworkParser::parse_address_port("[::]:443");
+        assert_eq!(ip, "::");
+        assert_eq!(port, Some(443));
+
+        let (ip, port) = NetworkParser::parse_address_port("[::1]:8080");
+        assert_eq!(ip, "::1");
+        assert_eq!(port, Some(8080));
+
+        let (ip, port) = NetworkParser::parse_address_port("[::ffff:142.250.110.188]:443");
+        assert_eq!(ip, "::ffff:142.250.110.188");
+        assert_eq!(port, Some(443));
+        let meta = NetworkParser::classify_ip(&ip);
+        assert_eq!(meta.version, "ipv4_mapped");
+        assert_eq!(meta.embedded_ipv4.as_deref(), Some("142.250.110.188"));
+        assert_ne!(meta.ip, "142.250.110.188");
+
+        let (local_address, local_ip, local_port, remote_address, remote_ip, remote_port) =
+            NetworkParser::parse_socket_endpoints("[::]:443", "[::ffff:142.250.110.188]:443");
+        assert_eq!(local_ip, "::");
+        assert_eq!(local_port, Some(443));
+        assert_eq!(local_address, "[::]:443");
+        assert_eq!(remote_ip, "::ffff:142.250.110.188");
+        assert_eq!(remote_port, Some(443));
+        assert_eq!(remote_address, "[::ffff:142.250.110.188]:443");
+    }
+
+    #[test]
+    fn test_parse_netstat_ipv6() {
+        let data = b"
+------ NETSTAT (netstat -npWae) ------
+Proto Recv-Q Send-Q Local Address                                       Foreign Address                                     State       User       Inode       PID/Program Name
+tcp6       0      0 [::]:443                                            [::]:0                                              LISTEN      1000       12345       -
+tcp6       0      0 [::ffff:142.250.110.188]:443                        [::ffff:51.116.253.169]:443                         ESTABLISHED 1000       12346       -
+------ 0.056s was the duration of 'NETSTAT' ------
+        ";
+
+        let parser = NetworkParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+
+        let sockets = result["sockets"].as_array().unwrap();
+        assert!(sockets.len() >= 2);
+
+        let listen = sockets
+            .iter()
+            .find(|s| s["local_port"].as_u64() == Some(443) && s["state"].as_str() == Some("LISTEN"))
+            .unwrap();
+        assert_eq!(listen["protocol"], "tcp6");
+        assert_eq!(listen["local_ip"], "::");
+        assert_eq!(listen["local_address"], "[::]:443");
+        assert_eq!(listen["remote_ip"], "::");
+        assert_eq!(listen["remote_port"], 0);
+
+        let v4mapped = sockets
+            .iter()
+            .find(|s| s["local_ip"].as_str() == Some("::ffff:142.250.110.188"))
+            .unwrap();
+        assert_eq!(v4mapped["local_ip_version"], "ipv4_mapped");
+        assert_eq!(v4mapped["local_ipv4"], "142.250.110.188");
+        assert_eq!(v4mapped["local_port"], 443);
+        assert_eq!(v4mapped["remote_ip"], "::ffff:51.116.253.169");
+        assert_eq!(v4mapped["remote_ip_version"], "ipv4_mapped");
+        assert_eq!(v4mapped["remote_ipv4"], "51.116.253.169");
+        assert_eq!(v4mapped["remote_port"], 443);
+        assert_eq!(
+            v4mapped["remote_address"].as_str(),
+            Some("[::ffff:51.116.253.169]:443")
+        );
+    }
+
+    #[test]
+    fn test_parse_proc_tcp6_ipv4_mapped_hex() {
+        // /proc/net/tcp6 encoding of ::ffff:142.250.110.188 (four host-endian u32 words)
+        let ip = NetworkParser::parse_ip_address("0000000000000000ffff0000bc6efa8e");
+        assert_eq!(ip, "::ffff:142.250.110.188");
+        let meta = NetworkParser::classify_ip(&ip);
+        assert_eq!(meta.version, "ipv4_mapped");
+        assert_eq!(meta.embedded_ipv4.as_deref(), Some("142.250.110.188"));
+    }
+
+    #[test]
+    fn test_parse_proc_tcp6_hex() {
+        assert_eq!(
+            NetworkParser::parse_ip_address("00000000000000000000000001000000"),
+            "::1"
+        );
+        assert_eq!(
+            NetworkParser::parse_ip_address("0100007F"),
+            "127.0.0.1"
+        );
+    }
 
     #[test]
     fn test_parse_netstat() {

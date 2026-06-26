@@ -752,11 +752,23 @@ fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
             if let Some(v) = sock.get("local_ip").and_then(|v| v.as_str()) {
                 log_json["local_ip"] = json!(v);
             }
+            if let Some(v) = sock.get("local_ip_version").and_then(|v| v.as_str()) {
+                log_json["local_ip_version"] = json!(v);
+            }
+            if let Some(v) = sock.get("local_ipv4").and_then(|v| v.as_str()) {
+                log_json["local_ipv4"] = json!(v);
+            }
             if let Some(v) = sock.get("local_port").and_then(|v| v.as_u64()) {
                 log_json["local_port"] = json!(v);
             }
             if let Some(v) = sock.get("remote_ip").and_then(|v| v.as_str()) {
                 log_json["remote_ip"] = json!(v);
+            }
+            if let Some(v) = sock.get("remote_ip_version").and_then(|v| v.as_str()) {
+                log_json["remote_ip_version"] = json!(v);
+            }
+            if let Some(v) = sock.get("remote_ipv4").and_then(|v| v.as_str()) {
+                log_json["remote_ipv4"] = json!(v);
             }
             if let Some(v) = sock.get("remote_port").and_then(|v| v.as_u64()) {
                 log_json["remote_port"] = json!(v);
