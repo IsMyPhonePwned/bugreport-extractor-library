@@ -181,6 +181,7 @@ fn format_parser_name(parser_type: &ParserType) -> &str {
         ParserType::Authentication => "Authentication",
         ParserType::Vpn => "VPN",
         ParserType::Privacy => "Privacy",
+        ParserType::Logcat => "Logcat",
     }
 }
 
@@ -302,6 +303,17 @@ fn format_item(parser_type: &ParserType, item: &Value) -> String {
                 format!("{} {} {} ({})", timestamp, status, user_str, auth)
             } else {
                 format!("{} {} {}", timestamp, status, user_str)
+            }
+        }
+        ParserType::Logcat => {
+            let ts = item.get("timestamp").and_then(|t| t.as_str()).unwrap_or("");
+            let level = item.get("level").and_then(|l| l.as_str()).unwrap_or("");
+            let tag = item.get("tag").and_then(|t| t.as_str()).unwrap_or("");
+            let pkg = item.get("package_name").and_then(|p| p.as_str());
+            if let Some(p) = pkg {
+                format!("{ts} {level}/{tag} ({p})")
+            } else {
+                format!("{ts} {level}/{tag}")
             }
         }
         _ => {

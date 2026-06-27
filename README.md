@@ -120,6 +120,7 @@ Extracts network connectivity and statistics.
 - **Socket connections**: 
   - TCP/UDP sockets with local/remote addresses and ports
   - Connection state, UID, inode
+  - **`package_name`**: Resolved from UID when Package parser output is available (post-parse enrichment)
   - Receive/send queue sizes
 - **Network interfaces**: 
   - Interface names, IP addresses (IPv4/IPv6)
@@ -175,7 +176,18 @@ Extracts VPN configuration and network properties.
   - VPN-related network configuration
   - Key-value property pairs
 
+### Logcat Parser
+Extracts log lines from **SYSTEM LOG** and **SYSTEM LOG AFTER DONE** sections (threadtime format with UID).
+- **Per-line fields**: timestamp, UID, PID, TID, log level, tag, message, section name
+- **`package_name`**: Resolved from UID via Package parser output when available
+- **Truncation**: Up to 100,000 events per bugreport (both sections combined)
+
+### Privacy Parser
+Extracts privacy-related settings from the bugreport (location providers, permission usage indicators, and related dumps).
+
 Each parser extracts data from specific sections within the dumpstate file, and some parsers may gather information from multiple sections to provide a complete picture.
+
+After parsing, **`enrich_parser_results`** maps Linux UIDs to package names on **network sockets** and **logcat events** when Package parser output is present in the same run (normal and comparison modes).
 
 ## Timeline JSONL export
 
@@ -185,7 +197,7 @@ The library can flatten parser output into **Plaso/Timesketch-style** rows (one 
 cargo run --release -- --file-path=dumpstate.txt --timeline-jsonl=timeline.jsonl
 ```
 
-Each line includes at least: `message`, `datetime` (RFC3339 when the bugreport/header time parses; otherwise the raw header timestamp string), `timestamp_desc`, `timestamp` (epoch **microseconds** when `datetime` parses), `time_is_approximate`, `data_type`, **`parser`** (PascalCase `ParserType`, e.g. `Process`), **`bugreport_parser`** (same id in lowercase for queries), **`event_time_binding`** (`per_record` \| `snapshot_only` \| `system_fallback`), plus parser-specific fields merged from the source JSON. **`snapshot_only`** means `datetime` is **only** the dumpstate capture instant from the bugreport header (or an unparseable header string kept as-is): used for rows without per-row times, including **Process (ps/top)**, memory snapshots, netstat-style sockets and related network listings, USB topology, Bluetooth device lists, battery per-app summaries, power reset reasons, ANR trace dumps without a file timestamp, and similar. **`system_fallback`** means **no** usable header timestamp was found; `datetime` is wall clock at export (explicit; same as the legacy fallback). Rows whose `timestamp` is before 1971-01-01 UTC or whose `datetime` falls in calendar year 1970 are dropped as bogus Unix-epoch artifacts; the JSON export includes **`skipped_epoch_timeline_events`** with the count. Export is capped (100k events total, 25k per parser) to keep files bounded.
+Each line includes at least: `message`, `datetime` (RFC3339 when the bugreport/header time parses; otherwise the raw header timestamp string), `timestamp_desc`, `timestamp` (epoch **microseconds** when `datetime` parses), `time_is_approximate`, `data_type`, **`parser`** (PascalCase `ParserType`, e.g. `Process`), **`bugreport_parser`** (same id in lowercase for queries), **`event_time_binding`** (`per_record` \| `snapshot_only` \| `system_fallback`), plus parser-specific fields merged from the source JSON. **`per_record`** is used for rows with intrinsic times (e.g. **Logcat** `MM-DD HH:MM:SS.mmm` lines, power history, USB events, package install logs). **`snapshot_only`** means `datetime` is **only** the dumpstate capture instant from the bugreport header (or an unparseable header string kept as-is): used for rows without per-row times, including **Process (ps/top)**, memory snapshots, netstat-style sockets and related network listings, USB topology, Bluetooth device lists, battery per-app summaries, power reset reasons, ANR trace dumps without a file timestamp, and similar. **`system_fallback`** means **no** usable header timestamp was found; `datetime` is wall clock at export (explicit; same as the legacy fallback). Rows whose `timestamp` is before 1971-01-01 UTC or whose `datetime` falls in calendar year 1970 are dropped as bogus Unix-epoch artifacts; the JSON export includes **`skipped_epoch_timeline_events`** with the count. Export is capped (100k events total, 25k per parser) to keep files bounded.
 
 The same semantics (including which rows are not intrinsic timestamp events) are spelled out in Rustdoc on the [`timeline`](src/timeline.rs) module (`bugreport_extractor_library::timeline`).
 

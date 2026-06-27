@@ -87,6 +87,7 @@ fn extract_entries_for_parser(parser_type: &ParserType, output: &Value) -> Optio
         ParserType::Crash => extract_crash_entries(output),
         ParserType::Bluetooth => extract_bluetooth_entries(output),
         ParserType::Network => extract_network_entries(output),
+        ParserType::Logcat => extract_logcat_entries(output),
         // Header and Memory parsers don't produce security-relevant events
         _ => {
             debug!("{:?} parser: No Sigma extraction function implemented", parser_type);
@@ -729,6 +730,55 @@ fn extract_bluetooth_entries(output: &Value) -> Option<Vec<LogEntry>> {
     }
 }
 
+/// Extracts log entries from LogcatParser output (`events` array).
+fn extract_logcat_entries(output: &Value) -> Option<Vec<LogEntry>> {
+    let events = output.get("events").and_then(|v| v.as_array())?;
+    let mut entries = Vec::with_capacity(events.len());
+    let mut conversion_errors = 0;
+
+    for (idx, ev) in events.iter().enumerate() {
+        let mut log_json = json!({ "event_type": "logcat_line" });
+        for key in [
+            "timestamp",
+            "uid",
+            "pid",
+            "tid",
+            "level",
+            "tag",
+            "message",
+            "section",
+            "package_name",
+        ] {
+            if let Some(v) = ev.get(key) {
+                if !v.is_null() {
+                    log_json[key] = v.clone();
+                }
+            }
+        }
+        match json_to_log_entry(log_json) {
+            Ok(entry) => entries.push(entry),
+            Err(e) => {
+                conversion_errors += 1;
+                warn!("Logcat parser: Failed to convert event {}: {}", idx + 1, e);
+            }
+        }
+    }
+
+    if conversion_errors > 0 {
+        warn!(
+            "Logcat parser: {} conversion errors out of {} events",
+            conversion_errors,
+            events.len()
+        );
+    }
+
+    if entries.is_empty() && events.is_empty() {
+        return None;
+    }
+
+    Some(entries)
+}
+
 /// Extracts log entries from NetworkParser output
 /// NetworkParser returns an object with optional "sockets", "interfaces", "network_stats", "wifi_scanner"
 fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
@@ -784,6 +834,9 @@ fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
             }
             if let Some(v) = sock.get("uid").and_then(|v| v.as_u64()) {
                 log_json["uid"] = json!(v);
+            }
+            if let Some(v) = sock.get("package_name").and_then(|v| v.as_str()) {
+                log_json["package_name"] = json!(v);
             }
             if let Some(v) = sock.get("inode").and_then(|v| v.as_u64()) {
                 log_json["inode"] = json!(v);

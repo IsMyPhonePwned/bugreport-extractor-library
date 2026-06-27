@@ -17,10 +17,12 @@ pub mod timing;
 pub mod file_loader;
 pub mod zip_utils;
 pub mod timeline;
+pub mod uid_package;
 
 pub use timeline::{
     export_timeline, export_timeline_value, BugreportFallbackTime, EventTimeBinding, TimelineExport,
 };
+pub use uid_package::{build_uid_package_map, enrich_parser_results, lookup_package, PER_USER_RANGE};
 
 use timing::Instant;
 

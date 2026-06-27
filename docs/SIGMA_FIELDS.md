@@ -314,6 +314,7 @@ One log entry per socket connection (from netstat/ss):
 | `remote_port` | integer | Remote port | `443` |
 | `state` | string | Connection state (e.g. ESTABLISHED) | `ESTABLISHED` |
 | `uid` | integer | Owning UID | `10100` |
+| `package_name` | string | App package resolved from `uid` (when Package parser ran) | `com.example.app` |
 | `inode` | integer | Socket inode | (optional) |
 | `recv_q`, `send_q` | integer | Queue sizes | (optional) |
 | `socket_key`, `additional_info` | string | Extra details | (optional) |
@@ -357,6 +358,24 @@ One log entry per aggregated interface (WIFI or MOBILE):
 
 **Use case**: Detect suspicious connections (remote_ip/port), unexpected interfaces, or apps performing WiFi scans.
 
+## Logcat Parser Fields
+
+Logcat parser output produces one Sigma log entry per log line (`event_type: logcat_line`).
+
+| Field | Type | Description | Example |
+|-------|------|-------------|---------|
+| `event_type` | string | `logcat_line` | `logcat_line` |
+| `timestamp` | string | Log line time (`MM-DD HH:MM:SS.mmm`) | `12-18 10:31:13.784` |
+| `uid` | integer | Android UID | `10133` |
+| `package_name` | string | Resolved package (when Package parser ran) | `com.example.app` |
+| `pid`, `tid` | integer | Process / thread IDs | `1234` |
+| `level` | string | Log level | `I`, `W`, `E` |
+| `tag` | string | Log tag | `ActivityManager` |
+| `message` | string | Log message body | `slow operation` |
+| `section` | string | Source section | `SYSTEM LOG` |
+
+**Use case**: Hunt for suspicious tags/messages, privilege abuse, or app-specific errors around incident time (timeline export uses `event_time_binding: per_record`).
+
 ## Rules directory layout
 
 Example and CVE rules are under `testdata/rules/`:
@@ -399,6 +418,7 @@ bel-cli --file-path=bugreport.zip \
 | USB | ✅ Yes | `usb_port`, `usb_device` |
 | Bluetooth | ✅ Yes | `bluetooth_device` |
 | Network | ✅ Yes | `network_socket`, `network_interface`, `network_stats`, `wifi_saved_network`, `wifi_scan_result`, `wifi_scan_event` |
+| Logcat | ✅ Yes | `logcat_line` |
 | Device Policy | ❌ No | - |
 | ADB | ❌ No | - |
 | Authentication | ❌ No | - |

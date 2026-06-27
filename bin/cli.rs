@@ -13,7 +13,7 @@ use sigma_zero::engine::SigmaEngine;
 use bugreport_extractor_library::run_parsers_concurrently;
 use bugreport_extractor_library::export_timeline;
 use bugreport_extractor_library::parsers::{
-    AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, PrivacyParser, ProcessParser, UsbParser, VpnParser
+    AdbParser, AuthenticationParser, BatteryParser, BluetoothParser, CrashParser, DevicePolicyParser, HeaderParser, LogcatParser, MemoryParser, NetworkParser, PackageParser, Parser as DataParser, ParserType, PowerParser, PrivacyParser, ProcessParser, UsbParser, VpnParser
 };
 use bugreport_extractor_library::detection::sigma;
 use bugreport_extractor_library::detection::sigma::{should_output_match, output_match, output_match_with_log, SigmaStats};
@@ -120,7 +120,9 @@ fn get_all_parser_types() -> Vec<ParserType> {
         ParserType::DevicePolicy,
         ParserType::Adb,
         ParserType::Authentication,
+        ParserType::Logcat,
         ParserType::Vpn,
+        ParserType::Privacy,
     ]
 }
 
@@ -264,6 +266,10 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
                 let auth_parser = AuthenticationParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(auth_parser)));
             },
+            ParserType::Logcat => {
+                let logcat_parser = LogcatParser::new()?;
+                parsers_to_run.push((pt.clone(), Box::new(logcat_parser)));
+            },
             ParserType::Vpn => {
                 let vpn_parser = VpnParser::new()?;
                 parsers_to_run.push((pt.clone(), Box::new(vpn_parser)));
@@ -306,7 +312,8 @@ fn main() -> Result<(), Box<dyn Error + Send + Sync>> {
     let parser_pb = progress.create_multi_parser_progress(parsers_to_run.len());
 
     // Process the file using all selected parsers in parallel.
-    let results = run_parsers_concurrently(file_content, parsers_to_run);
+    let mut results = run_parsers_concurrently(file_content, parsers_to_run);
+    bugreport_extractor_library::enrich_parser_results(&mut results);
     
     ProgressTracker::set_position(&parser_pb, results.len() as u64);
     ProgressTracker::finish_with_message(
@@ -756,6 +763,10 @@ fn run_comparison_mode(
                 let parser = AuthenticationParser::new().expect("Failed to create AuthenticationParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::Logcat => {
+                let parser = LogcatParser::new().expect("Failed to create LogcatParser");
+                parsers_before.push((pt.clone(), Box::new(parser)));
+            },
             ParserType::Vpn => {
                 let parser = VpnParser::new().expect("Failed to create VpnParser");
                 parsers_before.push((pt.clone(), Box::new(parser)));
@@ -779,7 +790,8 @@ fn run_comparison_mode(
         &format!("✓ Loaded {} ({:.2} MB)", before_file, file_content.len() as f64 / 1_048_576.0)
     );
     
-    let before_results = run_parsers_concurrently(file_content, parsers_before);
+    let mut before_results = run_parsers_concurrently(file_content, parsers_before);
+    bugreport_extractor_library::enrich_parser_results(&mut before_results);
     
     // Display timing for BEFORE file parsers
     if !show_progress {
@@ -854,6 +866,10 @@ fn run_comparison_mode(
                 let parser = AuthenticationParser::new().expect("Failed to create AuthenticationParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
             },
+            ParserType::Logcat => {
+                let parser = LogcatParser::new().expect("Failed to create LogcatParser");
+                parsers_after.push((pt.clone(), Box::new(parser)));
+            },
             ParserType::Vpn => {
                 let parser = VpnParser::new().expect("Failed to create VpnParser");
                 parsers_after.push((pt.clone(), Box::new(parser)));
@@ -877,7 +893,8 @@ fn run_comparison_mode(
         &format!("✓ Loaded {} ({:.2} MB)", after_file, file_content.len() as f64 / 1_048_576.0)
     );
     
-    let after_results = run_parsers_concurrently(file_content, parsers_after);
+    let mut after_results = run_parsers_concurrently(file_content, parsers_after);
+    bugreport_extractor_library::enrich_parser_results(&mut after_results);
     
     // Display timing for AFTER file parsers
     if !show_progress {

@@ -17,6 +17,7 @@ pub mod adb_parser;
 pub mod authentication_parser;
 pub mod vpn_parser;
 pub mod privacy_parser;
+pub mod logcat_parser;
 
 pub use header_parser::HeaderParser;
 pub use memory_parser::MemoryParser;
@@ -33,6 +34,7 @@ pub use adb_parser::AdbParser;
 pub use authentication_parser::AuthenticationParser;
 pub use vpn_parser::VpnParser;
 pub use privacy_parser::PrivacyParser;
+pub use logcat_parser::LogcatParser;
 
 /// The core trait for all parsers.
 /// Any new parser must implement this trait.
@@ -59,6 +61,7 @@ pub enum ParserType {
     DevicePolicy,
     Adb,
     Authentication,
+    Logcat,
     Vpn,
     Privacy
 }
@@ -80,6 +83,7 @@ pub enum ParserType {
     DevicePolicy,
     Adb,
     Authentication,
+    Logcat,
     Vpn,
     Privacy
 }

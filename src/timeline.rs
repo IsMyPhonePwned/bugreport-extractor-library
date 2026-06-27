@@ -110,6 +110,38 @@ fn parse_power_event_ts(event_ts: &str, entry_ts: Option<&str>) -> Option<DateTi
     None
 }
 
+/// Logcat `MM-DD HH:MM:SS.mmm` with year taken from dumpstate header when possible.
+fn parse_logcat_line_ts(ts: &str, ctx: &BugreportFallbackTime) -> Option<DateTime<Utc>> {
+    let t = ts.trim();
+    if t.len() < 18 || t.as_bytes().get(2) != Some(&b'-') {
+        return parse_ts(t);
+    }
+    let year = parse_ts(&ctx.datetime)
+        .map(|d| d.year())
+        .unwrap_or_else(|| Utc::now().year());
+    let combined = format!("{year}-{} {}", &t[..5], t[6..].trim_start());
+    if let Ok(naive) = NaiveDateTime::parse_from_str(&combined, "%Y-%m-%d %H:%M:%S%.3f") {
+        return Some(DateTime::from_naive_utc_and_offset(naive, Utc));
+    }
+    parse_ts(t)
+}
+
+fn logcat_row_time(
+    ts: &str,
+    ctx: &BugreportFallbackTime,
+    snap: EventTimeBinding,
+) -> (String, bool, EventTimeBinding) {
+    if let Some(dt) = parse_logcat_line_ts(ts, ctx) {
+        (dt.to_rfc3339(), false, EventTimeBinding::PerRecord)
+    } else {
+        (
+            ctx.datetime.clone(),
+            ctx.time_is_approximate,
+            snap,
+        )
+    }
+}
+
 fn iso_to_micros(iso: &str) -> Option<i64> {
     parse_ts(iso).map(|d| d.timestamp_micros())
 }
@@ -991,6 +1023,53 @@ fn flatten_package(
     }
 }
 
+fn flatten_logcat(
+    v: &Value,
+    ctx: &BugreportFallbackTime,
+    out: &mut Vec<Value>,
+    global: &mut usize,
+    pb: &mut usize,
+) {
+    let snap = binding_when_row_has_no_parsed_time(ctx);
+    let Some(events) = v.get("events").and_then(|a| a.as_array()) else {
+        flatten_generic_json(ParserType::Logcat, v, ctx, out, global, pb);
+        return;
+    };
+    if events.is_empty() {
+        return;
+    }
+    for e in events {
+        let Some(mut o) = e.as_object().cloned() else {
+            continue;
+        };
+        let tag = o.get("tag").and_then(|x| x.as_str()).unwrap_or("");
+        let level = o.get("level").and_then(|x| x.as_str()).unwrap_or("");
+        let section = o.get("section").and_then(|x| x.as_str()).unwrap_or("logcat");
+        let pkg = o.get("package_name").and_then(|x| x.as_str()).unwrap_or("");
+        let ts = o.get("timestamp").and_then(|x| x.as_str()).unwrap_or("");
+        let (datetime, approx, binding) = logcat_row_time(ts, ctx, snap);
+        let msg = if pkg.is_empty() {
+            format!("[{section}] {level}/{tag}")
+        } else {
+            format!("[{section}] {level}/{tag} ({pkg})")
+        };
+        o.insert("event_type".into(), json!("logcat_line"));
+        push_event(
+            out,
+            global,
+            pb,
+            msg,
+            datetime,
+            "logcat_line",
+            approx,
+            ParserType::Logcat,
+            "android:bugreport:logcat",
+            binding,
+            o,
+        );
+    }
+}
+
 fn flatten_authentication(
     v: &Value,
     ctx: &BugreportFallbackTime,
@@ -1377,6 +1456,7 @@ pub fn export_timeline(
             ParserType::Authentication => {
                 flatten_authentication(v, &ctx, &mut out, &mut global, &mut pb);
             }
+            ParserType::Logcat => flatten_logcat(v, &ctx, &mut out, &mut global, &mut pb),
             ParserType::Vpn => flatten_vpn(v, &ctx, &mut out, &mut global, &mut pb),
             ParserType::Privacy => flatten_privacy(v, &ctx, &mut out, &mut global, &mut pb),
         }
@@ -1676,5 +1756,47 @@ u:r:system_server:s0           system          1486  1486   878   25324084 37841
             proc_row.get("time_is_approximate").and_then(|x| x.as_bool()),
             Some(true)
         );
+    }
+
+    #[test]
+    fn export_timeline_logcat_per_record_time() {
+        use crate::parsers::LogcatParser;
+
+        let data = br"
+========================================================
+== dumpstate: 2025-12-18 10:30:00
+========================================================
+
+Build: TEST
+------ SYSTEM LOG (logcat -v threadtime -v printable -v uid -d *:v) ------
+12-18 10:31:13.784 10133 1234 1234 I ExampleApp: started
+------ 0.622s was the duration of 'SYSTEM LOG' ------
+";
+        let parsers = vec![
+            (ParserType::Header, Box::new(HeaderParser::new().unwrap()) as _),
+            (ParserType::Logcat, Box::new(LogcatParser::new().unwrap()) as _),
+        ];
+        let content: Arc<[u8]> = Arc::from(data.as_slice());
+        let results = run_parsers_concurrently(content, parsers);
+        let exp = export_timeline(&results);
+        let logcat_rows: Vec<_> = exp
+            .events
+            .iter()
+            .filter(|e| e.get("parser").and_then(|x| x.as_str()) == Some("Logcat"))
+            .collect();
+        assert_eq!(logcat_rows.len(), 1);
+        assert_eq!(
+            logcat_rows[0].get("event_time_binding").and_then(|x| x.as_str()),
+            Some("per_record")
+        );
+        assert_eq!(
+            logcat_rows[0].get("tag").and_then(|x| x.as_str()),
+            Some("ExampleApp")
+        );
+        assert!(logcat_rows[0]
+            .get("datetime")
+            .and_then(|x| x.as_str())
+            .unwrap_or("")
+            .contains("2025-12-18"));
     }
 }
