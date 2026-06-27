@@ -302,9 +302,15 @@ One log entry per socket connection (from netstat/ss):
 | `protocol` | string | Protocol (tcp, udp, etc.) | `tcp` |
 | `local_address` | string | Local address:port | `127.0.0.1:12345` |
 | `remote_address` | string | Remote address:port | `10.0.0.1:443` |
-| `local_ip` | string | Local IP | `127.0.0.1` |
+| `local_ip` | string | Local IP (literal from bugreport) | `127.0.0.1`, `::`, `::ffff:142.250.110.188` |
+| `local_ip_version` | string | `ipv4`, `ipv6`, `ipv4_mapped`, `wildcard` | `ipv6` |
+| `local_ip_role` | string | `any` (`0.0.0.0` / `::` / `*`), `loopback`, `unicast` | `any` for `[::]:443` listeners |
+| `local_ipv4` | string | Embedded IPv4 when `local_ip_version` is `ipv4_mapped` | `142.250.110.188` |
 | `local_port` | integer | Local port | `12345` |
-| `remote_ip` | string | Remote IP | `10.0.0.1` |
+| `remote_ip` | string | Remote IP (literal from bugreport) | `10.0.0.1`, `::` |
+| `remote_ip_version` | string | Same values as `local_ip_version` | `ipv4_mapped` |
+| `remote_ip_role` | string | Same values as `local_ip_role` | `any` |
+| `remote_ipv4` | string | Embedded IPv4 when `remote_ip_version` is `ipv4_mapped` | `51.116.253.169` |
 | `remote_port` | integer | Remote port | `443` |
 | `state` | string | Connection state (e.g. ESTABLISHED) | `ESTABLISHED` |
 | `uid` | integer | Owning UID | `10100` |

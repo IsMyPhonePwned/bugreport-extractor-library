@@ -12,6 +12,8 @@ struct IpEndpointMeta {
     version: &'static str,
     /// Plain IPv4 embedded in `::ffff:a.b.c.d`; absent for native IPv4/IPv6.
     embedded_ipv4: Option<String>,
+    /// Semantic role: `any` (0.0.0.0 / :: / *), `loopback`, `unicast`, or `unknown`.
+    role: &'static str,
 }
 
 #[derive(Debug, Clone)]
@@ -247,16 +249,30 @@ impl NetworkParser {
         hex_str.to_string()
     }
 
+    fn ip_role(addr: &IpAddr) -> &'static str {
+        if addr.is_unspecified() {
+            "any"
+        } else if addr.is_loopback() {
+            "loopback"
+        } else {
+            "unicast"
+        }
+    }
+
     /// Classify an IP literal for socket fields.
     ///
     /// `::ffff:142.250.110.188` is **not** the same as `142.250.110.188`: it is IPv4-mapped IPv6
     /// (`ipv4_mapped`). We keep the full IPv6 form in `ip` and expose the embedded IPv4 separately.
+    ///
+    /// `::` is the IPv6 **unspecified** address (like `0.0.0.0` on IPv4): listen/connect on any
+    /// interface, not a specific remote host. Use `ip_role: "any"` to interpret it.
     fn classify_ip(ip: &str) -> IpEndpointMeta {
         if ip == "*" {
             return IpEndpointMeta {
                 ip: "*".to_string(),
                 version: "wildcard",
                 embedded_ipv4: None,
+                role: "any",
             };
         }
         if ip.is_empty() {
@@ -264,6 +280,7 @@ impl NetworkParser {
                 ip: String::new(),
                 version: "unknown",
                 embedded_ipv4: None,
+                role: "unknown",
             };
         }
         match ip.parse::<IpAddr>() {
@@ -271,6 +288,7 @@ impl NetworkParser {
                 ip: v4.to_string(),
                 version: "ipv4",
                 embedded_ipv4: None,
+                role: Self::ip_role(&IpAddr::V4(v4)),
             },
             Ok(IpAddr::V6(v6)) => {
                 if let Some(v4) = v6.to_ipv4_mapped() {
@@ -278,12 +296,14 @@ impl NetworkParser {
                         ip: v6.to_string(),
                         version: "ipv4_mapped",
                         embedded_ipv4: Some(v4.to_string()),
+                        role: Self::ip_role(&IpAddr::V6(v6)),
                     }
                 } else {
                     IpEndpointMeta {
                         ip: v6.to_string(),
                         version: "ipv6",
                         embedded_ipv4: None,
+                        role: Self::ip_role(&IpAddr::V6(v6)),
                     }
                 }
             }
@@ -291,6 +311,7 @@ impl NetworkParser {
                 ip: ip.to_string(),
                 version: "unknown",
                 embedded_ipv4: None,
+                role: "unknown",
             },
         }
     }
@@ -304,6 +325,7 @@ impl NetworkParser {
         let meta = Self::classify_ip(ip);
         obj.insert(format!("{side}_ip"), json!(meta.ip));
         obj.insert(format!("{side}_ip_version"), json!(meta.version));
+        obj.insert(format!("{side}_ip_role"), json!(meta.role));
         if let Some(v4) = meta.embedded_ipv4 {
             obj.insert(format!("{side}_ipv4"), json!(v4));
         }
@@ -1561,6 +1583,9 @@ mod tests {
         let (ip, port) = NetworkParser::parse_address_port("[::]");
         assert_eq!(ip, "::");
         assert_eq!(port, None);
+        let meta = NetworkParser::classify_ip(&ip);
+        assert_eq!(meta.version, "ipv6");
+        assert_eq!(meta.role, "any");
 
         let (ip, port) = NetworkParser::parse_address_port("[::]:443");
         assert_eq!(ip, "::");
@@ -1610,8 +1635,11 @@ tcp6       0      0 [::ffff:142.250.110.188]:443                        [::ffff:
             .unwrap();
         assert_eq!(listen["protocol"], "tcp6");
         assert_eq!(listen["local_ip"], "::");
+        assert_eq!(listen["local_ip_version"], "ipv6");
+        assert_eq!(listen["local_ip_role"], "any");
         assert_eq!(listen["local_address"], "[::]:443");
         assert_eq!(listen["remote_ip"], "::");
+        assert_eq!(listen["remote_ip_role"], "any");
         assert_eq!(listen["remote_port"], 0);
 
         let v4mapped = sockets
