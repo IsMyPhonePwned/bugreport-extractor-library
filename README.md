@@ -121,7 +121,9 @@ Extracts network connectivity and statistics.
   - TCP/UDP sockets with local/remote addresses and ports
   - Connection state, UID, inode
   - **`package_name`**: Resolved from UID when Package parser output is available (post-parse enrichment)
+  - **`program_name` / `program_pid`**: From netstat `PID/Program` when present (preferred over UID-based resolution)
   - **`process_cmd` / `process_pid`**: Fallback from Process parser when the socket UID has no matching package (e.g. `keystore2`, `system_server`)
+  - **`owner`**: Best resolved label (`package_name`, `program_name`, or `process_cmd`)
   - Receive/send queue sizes
 - **Network interfaces**: 
   - Interface names, IP addresses (IPv4/IPv6)

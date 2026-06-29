@@ -32,12 +32,36 @@ struct SocketConnection {
     send_q: Option<u32>,
     socket_key: Option<String>,
     additional_info: Option<String>, // For TCP details from ss command
+    /// From netstat `PID/Program` column when present (more reliable than UID→package).
+    program_name: Option<String>,
+    program_pid: Option<u32>,
 }
 
 impl SocketConnection {
+    /// Collapse tcp6/udp6 IPv4-mapped rows with their tcp/udp counterparts for dedup.
+    fn socket_protocol_key(&self) -> String {
+        let v4_mapped = self
+            .local_ip
+            .as_deref()
+            .is_some_and(|ip| ip.starts_with("::ffff:"))
+            || self
+                .remote_ip
+                .as_deref()
+                .is_some_and(|ip| ip.starts_with("::ffff:"));
+        match self.protocol.as_str() {
+            "tcp6" if v4_mapped => "tcp".to_string(),
+            "udp6" if v4_mapped => "udp".to_string(),
+            other => other.to_string(),
+        }
+    }
+
     fn make_key(&self) -> String {
-        // Create a unique key based on protocol, local, and remote addresses
-        format!("{}|{}|{}", self.protocol, self.local_address, self.remote_address)
+        format!(
+            "{}|{}|{}",
+            self.socket_protocol_key(),
+            self.local_address,
+            self.remote_address
+        )
     }
     
     fn merge(&mut self, other: &SocketConnection) {
@@ -50,8 +74,12 @@ impl SocketConnection {
                 self.state = Some(other_state.replace("-", "_"));
             }
         }
-        if self.uid.is_none() {
-            self.uid = other.uid;
+        if let Some(other_uid) = other.uid {
+            if other_uid > 0 {
+                self.uid = Some(other_uid);
+            } else if self.uid.is_none() {
+                self.uid = Some(other_uid);
+            }
         }
         if self.inode.is_none() {
             self.inode = other.inode;
@@ -82,7 +110,84 @@ impl SocketConnection {
         if other.additional_info.is_some() {
             self.additional_info = other.additional_info.clone();
         }
+        if self.program_pid.is_none() {
+            self.program_pid = other.program_pid;
+        }
+        if other.program_name.is_some() {
+            let prefer_other = other
+                .program_name
+                .as_ref()
+                .is_some_and(|n| !n.starts_with("binder:"));
+            let replace = self.program_name.is_none()
+                || (prefer_other
+                    && self
+                        .program_name
+                        .as_ref()
+                        .is_some_and(|n| n.starts_with("binder:")));
+            if replace {
+                self.program_name = other.program_name.clone();
+                if other.program_pid.is_some() {
+                    self.program_pid = other.program_pid;
+                }
+            }
+        }
     }
+}
+
+fn upsert_socket(
+    socket_map: &mut std::collections::HashMap<String, SocketConnection>,
+    socket: SocketConnection,
+) {
+    let key = socket.make_key();
+    if let Some(existing) = socket_map.get_mut(&key) {
+        existing.merge(&socket);
+    } else {
+        socket_map.insert(key, socket);
+    }
+}
+
+fn parse_pid_program(field: &str) -> (Option<u32>, Option<String>) {
+    if field.is_empty() || field == "-" {
+        return (None, None);
+    }
+    let Some((pid_str, name)) = field.split_once('/') else {
+        return (None, None);
+    };
+    let pid = pid_str.parse().ok();
+    let name = name.trim();
+    let name = name.strip_suffix(" (deleted)").unwrap_or(name).trim();
+    let program = if name.is_empty() {
+        None
+    } else {
+        Some(name.to_string())
+    };
+    (pid, program)
+}
+
+/// Parse uid, inode, state, and PID/Program from the tail of a netstat row.
+fn parse_netstat_trailing_fields(
+    protocol: &str,
+    parts: &[&str],
+) -> (Option<String>, Option<u32>, Option<u64>, Option<u32>, Option<String>) {
+    let n = parts.len();
+    if n < 7 {
+        return (None, None, None, None, None);
+    }
+
+    let (program_pid, program_name) = if n >= 9 {
+        parse_pid_program(parts[n - 1])
+    } else {
+        (None, None)
+    };
+    let inode = parts[n - 2].parse().ok();
+    let uid = parts[n - 3].parse().ok();
+    let state = if protocol.starts_with("tcp") && n >= 8 {
+        Some(parts[n - 4].replace('-', "_"))
+    } else {
+        None
+    };
+
+    (state, uid, inode, program_pid, program_name)
 }
 
 #[derive(Debug, Clone)]
@@ -747,43 +852,9 @@ impl Parser for NetworkParser {
                         } else {
                             "*:*".to_string()
                         };
-                        let state = if protocol.starts_with("tcp") && parts.len() > 5 {
-                            Some(parts[5].to_string())
-                        } else if protocol == "udp" || protocol == "udp6" {
-                            if parts.len() > 5 {
-                                Some(parts[5].to_string())
-                            } else {
-                                None
-                            }
-                        } else {
-                            None
-                        };
-                        
-                        // Parse User (UID) and Inode - these are typically columns 6 and 7
-                        let mut uid = None;
-                        let mut inode = None;
-                        
-                        // Try to find UID and inode in the remaining fields
-                        // In netstat format, they appear as separate columns: "1010351    1136844"
-                        if parts.len() > 6 {
-                            // Try column 6 as UID
-                            uid = parts[6].parse().ok();
-                        }
-                        if parts.len() > 7 {
-                            // Try column 7 as inode
-                            inode = parts[7].parse().ok();
-                        }
-                        
-                        // Also check for uid: and ino: patterns (from ss command format)
-                        for part in &parts {
-                            if let Some(uid_str) = part.strip_prefix("uid:") {
-                                uid = uid_str.parse().ok();
-                            } else if let Some(ino_str) = part.strip_prefix("ino:") {
-                                inode = ino_str.parse().ok();
-                            } else if part.starts_with("0x") {
-                                inode = Self::parse_hex_or_decimal(part);
-                            }
-                        }
+
+                        let (state, uid, inode, program_pid, program_name) =
+                            parse_netstat_trailing_fields(&protocol, &parts);
 
                         // Parse addresses and ports (normalize IPv6 bracket notation)
                         let (local_address, local_ip, local_port, remote_address, remote_ip, remote_port) =
@@ -804,10 +875,11 @@ impl Parser for NetworkParser {
                             send_q,
                             socket_key: None,
                             additional_info: None,
+                            program_name,
+                            program_pid,
                         };
-                        
-                        let key = socket.make_key();
-                        socket_map.insert(key, socket);
+
+                        upsert_socket(&mut socket_map, socket);
                     }
                 }
 
@@ -870,10 +942,11 @@ impl Parser for NetworkParser {
                             send_q: None,
                             socket_key: None,
                             additional_info: None,
+                            program_name: None,
+                            program_pid: None,
                         };
-                        
-                        let key = socket.make_key();
-                        socket_map.insert(key, socket);
+
+                        upsert_socket(&mut socket_map, socket);
                     }
                 }
             }
@@ -921,8 +994,6 @@ impl Parser for NetworkParser {
                         }
                     }
                     additional_lines.clear();
-                    
-                    // Parse socket line: "tcp    SYN-SENT   0      1      192.168.8.183:55191              51.116.253.169:443                 timer:(on,1.484ms,7) uid:1010351 ino:1136844 sk:9087 <->"
                     let parts: Vec<&str> = trimmed.split_whitespace().collect();
                     if parts.len() >= 5 {
                         let protocol = parts[0].to_lowercase();
@@ -971,6 +1042,8 @@ impl Parser for NetworkParser {
                                 send_q,
                                 socket_key,
                                 additional_info: None,
+                                program_name: None,
+                                program_pid: None,
                             });
                         }
                     }
@@ -1464,6 +1537,12 @@ impl Parser for NetworkParser {
                 if let Some(additional) = s.additional_info {
                     obj.insert("additional_info".to_string(), json!(additional));
                 }
+                if let Some(ref program) = s.program_name {
+                    obj.insert("program_name".to_string(), json!(program));
+                }
+                if let Some(program_pid) = s.program_pid {
+                    obj.insert("program_pid".to_string(), json!(program_pid));
+                }
                 json!(obj)
             }).collect();
             result.insert("sockets".to_string(), json!(sockets_json));
@@ -1713,6 +1792,34 @@ udp        0      0 192.168.8.183:40988                                 62.201.1
         assert_eq!(syn_sent["local_port"], 55191);
         assert_eq!(syn_sent["remote_ip"], "51.116.253.169");
         assert_eq!(syn_sent["remote_port"], 443);
+
+        let udp = sockets
+            .iter()
+            .find(|s| s["remote_ip"].as_str() == Some("62.201.149.82"))
+            .unwrap();
+        assert_eq!(udp["uid"], 1000);
+        assert_eq!(udp["inode"], 1166277);
+    }
+
+    #[test]
+    fn test_parse_netstat_pid_program() {
+        let data = b"
+------ NETSTAT (netstat -npWae) ------
+Proto Recv-Q Send-Q Local Address                                       Foreign Address                                     State       User       Inode       PID/Program Name
+tcp        0      0 10.0.0.5:51234                                      216.58.214.67:443                                   ESTABLISHED 10282      22222       12345/com.google.android.gms
+------ 0.056s was the duration of 'NETSTAT' ------
+        ";
+
+        let parser = NetworkParser::new().unwrap();
+        let result = parser.parse(data).unwrap();
+        let sockets = result["sockets"].as_array().unwrap();
+        let sock = sockets
+            .iter()
+            .find(|s| s["remote_ip"].as_str() == Some("216.58.214.67"))
+            .unwrap();
+        assert_eq!(sock["uid"], 10282);
+        assert_eq!(sock["program_name"], "com.google.android.gms");
+        assert_eq!(sock["program_pid"], 12345);
     }
 
     #[test]

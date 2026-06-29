@@ -838,6 +838,12 @@ fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
             if let Some(v) = sock.get("package_name").and_then(|v| v.as_str()) {
                 log_json["package_name"] = json!(v);
             }
+            if let Some(v) = sock.get("program_name").and_then(|v| v.as_str()) {
+                log_json["program_name"] = json!(v);
+            }
+            if let Some(v) = sock.get("program_pid").and_then(|v| v.as_u64()) {
+                log_json["program_pid"] = json!(v);
+            }
             if let Some(v) = sock.get("process_cmd").and_then(|v| v.as_str()) {
                 log_json["process_cmd"] = json!(v);
             }
@@ -846,6 +852,26 @@ fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
             }
             if let Some(v) = sock.get("process_user").and_then(|v| v.as_str()) {
                 log_json["process_user"] = json!(v);
+            }
+            if let Some(v) = sock.get("owner").and_then(|v| v.as_str()) {
+                log_json["owner"] = json!(v);
+            }
+            if let Some(v) = sock.get("owner_type").and_then(|v| v.as_str()) {
+                log_json["owner_type"] = json!(v);
+            }
+            if let Some(v) = sock.get("attribution_status").and_then(|v| v.as_str()) {
+                log_json["attribution_status"] = json!(v);
+            }
+            if let Some(v) = sock.get("socket_direction").and_then(|v| v.as_str()) {
+                log_json["socket_direction"] = json!(v);
+            }
+            if let Some(v) = sock.get("peer_ip_display").and_then(|v| v.as_str()) {
+                log_json["peer_ip_display"] = json!(v);
+            }
+            if sock.get("peer_ip").map(|v| v.is_null()).unwrap_or(false) {
+                log_json["peer_ip"] = Value::Null;
+            } else if let Some(v) = sock.get("peer_ip").and_then(|v| v.as_str()) {
+                log_json["peer_ip"] = json!(v);
             }
             if let Some(v) = sock.get("inode").and_then(|v| v.as_u64()) {
                 log_json["inode"] = json!(v);

@@ -828,8 +828,9 @@ fn flatten_network(
                 let la = o.get("local_address").and_then(|x| x.as_str()).unwrap_or("");
                 let ra = o.get("remote_address").and_then(|x| x.as_str()).unwrap_or("");
                 let owner = o
-                    .get("package_name")
+                    .get("owner")
                     .and_then(|x| x.as_str())
+                    .or_else(|| o.get("package_name").and_then(|x| x.as_str()))
                     .or_else(|| o.get("process_cmd").and_then(|x| x.as_str()))
                     .unwrap_or("");
                 let msg = if owner.is_empty() {

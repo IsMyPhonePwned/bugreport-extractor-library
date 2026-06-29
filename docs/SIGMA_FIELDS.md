@@ -315,9 +315,14 @@ One log entry per socket connection (from netstat/ss):
 | `state` | string | Connection state (e.g. ESTABLISHED) | `ESTABLISHED` |
 | `uid` | integer | Owning UID | `10100` |
 | `package_name` | string | App package resolved from `uid` (when Package parser ran) | `com.example.app` |
+| `program_name` | string | Process name from netstat `PID/Program` column | `com.google.android.gms` |
+| `program_pid` | integer | PID from netstat `PID/Program` column | `12345` |
 | `process_cmd` | string | Process command when no package matches `uid` (Process parser) | `keystore2` |
 | `process_pid` | integer | PID of the matched process | `659` |
 | `process_user` | string | Android user from `ps` / `top` | `u0_system` |
+| `owner` | string | Resolved owner (`package_name`, `program_name`, or `process_cmd`) | `com.example.app` |
+| `owner_type` | string | `package`, `process`, or `stale` | `package` |
+| `attribution_status` | string | `stale_socket` when the bugreport has no UID/program for a dying TCP socket | `stale_socket` |
 | `inode` | integer | Socket inode | (optional) |
 | `recv_q`, `send_q` | integer | Queue sizes | (optional) |
 | `socket_key`, `additional_info` | string | Extra details | (optional) |

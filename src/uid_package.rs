@@ -42,7 +42,9 @@ pub fn build_uid_package_map(package_output: &Value) -> HashMap<u32, String> {
             };
 
             if let Some(uid) = pkg.get("uid").and_then(value_as_u32) {
-                map.entry(uid).or_insert_with(|| name.to_string());
+                if is_app_linux_uid(uid) && !package_uses_shared_uid(pkg) {
+                    map.entry(uid).or_insert_with(|| name.to_string());
+                }
             }
 
             let app_id = pkg
@@ -51,7 +53,9 @@ pub fn build_uid_package_map(package_output: &Value) -> HashMap<u32, String> {
                 .or_else(|| pkg.get("app_id").and_then(value_as_u32));
 
             if let Some(app_id) = app_id {
-                map.entry(app_id).or_insert_with(|| name.to_string());
+                if is_app_linux_uid(app_id) && !package_uses_shared_uid(pkg) {
+                    map.entry(app_id).or_insert_with(|| name.to_string());
+                }
                 if let Some(users) = pkg.get("users").and_then(|v| v.as_array()) {
                     for user in users {
                         if let Some(user_id) = user.get("user_id").and_then(value_as_u32) {
@@ -59,8 +63,10 @@ pub fn build_uid_package_map(package_output: &Value) -> HashMap<u32, String> {
                                 .checked_mul(PER_USER_RANGE)
                                 .and_then(|base| base.checked_add(app_id));
                             if let Some(full_uid) = full_uid {
-                                map.entry(full_uid)
-                                    .or_insert_with(|| name.to_string());
+                                if is_app_linux_uid(full_uid) {
+                                    map.entry(full_uid)
+                                        .or_insert_with(|| name.to_string());
+                                }
                             }
                         }
                     }
@@ -94,6 +100,9 @@ pub fn build_uid_process_map(process_output: &Value) -> HashMap<u32, ProcessIden
         let Some(uid) = parse_android_user_uid(user) else {
             continue;
         };
+        if uid == 0 {
+            continue;
+        }
         by_uid
             .entry(uid)
             .or_default()
@@ -180,8 +189,22 @@ fn value_as_u32(v: &Value) -> Option<u32> {
         .or_else(|| v.as_i64().and_then(|n| u32::try_from(n).ok()))
 }
 
+/// Linux UIDs below this are system/shared (e.g. `android.uid.system/1000`), not per-app IDs.
+pub fn is_app_linux_uid(uid: u32) -> bool {
+    uid >= AID_APP_START
+}
+
+fn package_uses_shared_uid(pkg: &Value) -> bool {
+    pkg.get("sharedUser")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s.contains("SharedUserSetting") || s.contains("android.uid."))
+}
+
 /// Resolve a Linux UID to a package name.
 pub fn lookup_package(uid_map: &HashMap<u32, String>, uid: u32) -> Option<&str> {
+    if !is_app_linux_uid(uid) {
+        return None;
+    }
     uid_map.get(&uid).map(String::as_str)
 }
 
@@ -190,6 +213,9 @@ pub fn lookup_process(
     process_map: &HashMap<u32, ProcessIdentity>,
     uid: u32,
 ) -> Option<&ProcessIdentity> {
+    if uid == 0 {
+        return None;
+    }
     process_map.get(&uid)
 }
 
@@ -238,13 +264,134 @@ fn attach_socket_identity(
     uid_map: &HashMap<u32, String>,
     process_map: &HashMap<u32, ProcessIdentity>,
 ) {
-    if !obj.contains_key("package_name") {
-        attach_package_name(obj, uid_map);
+    if is_stale_unattributed_socket(obj) {
+        obj.remove("package_name");
+        obj.remove("process_cmd");
+        obj.remove("process_pid");
+        obj.remove("process_user");
+        obj.insert("attribution_status".to_string(), json!("stale_socket"));
+        obj.insert(
+            "owner".to_string(),
+            json!("unattributed (stale socket)"),
+        );
+        obj.insert("owner_type".to_string(), json!("stale"));
+        return;
     }
-    if obj.contains_key("package_name")
-        || obj.contains_key("process_cmd")
-        || process_map.is_empty()
+
+    let netstat_program = obj
+        .get("program_name")
+        .and_then(|v| v.as_str())
+        .filter(|s| !s.is_empty())
+        .map(str::to_string);
+    let netstat_pid = obj.get("program_pid").and_then(value_as_u32);
+
+    if let Some(program) = netstat_program {
+        // Netstat PID/Program is per-socket and overrides UID-based guesses.
+        obj.remove("package_name");
+        obj.remove("process_cmd");
+        obj.remove("process_pid");
+        if looks_like_package_name(&program) {
+            obj.insert("package_name".to_string(), json!(program));
+        } else {
+            obj.insert("process_cmd".to_string(), json!(program));
+            if let Some(pid) = netstat_pid {
+                obj.insert("process_pid".to_string(), json!(pid));
+            }
+        }
+    } else if !obj.contains_key("package_name") {
+        attach_package_name(obj, uid_map);
+        if !obj.contains_key("package_name") {
+            attach_process_identity(obj, process_map);
+        }
+    }
+
+    annotate_listener_socket(obj);
+    attach_owner_fields(obj);
+}
+
+fn is_wildcard_ip(ip: &str) -> bool {
+    matches!(ip, "" | "*" | "::" | "0.0.0.0" | "0:0:0:0:0:0:0:0")
+}
+
+/// Listening sockets use `::` / `0.0.0.0` as remote — not a real peer IP.
+fn annotate_listener_socket(obj: &mut Map<String, Value>) {
+    let remote_ip = obj
+        .get("remote_ip")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let remote_role = obj
+        .get("remote_ip_role")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default();
+    let is_listen_state = socket_state_normalized(obj).contains("LISTEN");
+    let listener = is_listen_state
+        || remote_role == "any"
+        || is_wildcard_ip(remote_ip)
+        || obj
+            .get("remote_address")
+            .and_then(|v| v.as_str())
+            .is_some_and(|a| a.ends_with(":*") || a.contains("[::]:*"));
+
+    if !listener {
+        return;
+    }
+
+    obj.insert("socket_direction".to_string(), json!("listen"));
+    obj.insert("peer_ip".to_string(), Value::Null);
+    obj.insert("peer_ip_display".to_string(), json!("(any)"));
+    if obj
+        .get("attribution_status")
+        .and_then(|v| v.as_str())
+        .is_none()
     {
+        obj.insert("attribution_status".to_string(), json!("listener"));
+    }
+}
+
+fn socket_state_normalized(obj: &Map<String, Value>) -> String {
+    obj.get("state")
+        .and_then(|v| v.as_str())
+        .unwrap_or_default()
+        .to_uppercase()
+        .replace('-', "_")
+}
+
+/// Sockets in terminal TCP states with uid/inode 0 carry no owning app in bugreports.
+pub fn is_stale_unattributed_socket(obj: &Map<String, Value>) -> bool {
+    if obj
+        .get("program_name")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| !s.is_empty() && s != "-")
+    {
+        return false;
+    }
+
+    let uid = obj.get("uid").and_then(value_as_u32);
+    let inode = obj.get("inode").and_then(|v| v.as_u64());
+    let uid_unowned = uid.is_none() || uid == Some(0);
+    let inode_unowned = inode.is_none() || inode == Some(0);
+    if !(uid_unowned && inode_unowned) {
+        return false;
+    }
+
+    matches!(
+        socket_state_normalized(obj).as_str(),
+        "LAST_ACK"
+            | "FIN_WAIT1"
+            | "FIN_WAIT2"
+            | "TIME_WAIT"
+            | "CLOSE_WAIT"
+            | "CLOSING"
+            | "CLOSE"
+    )
+}
+
+fn looks_like_package_name(name: &str) -> bool {
+    name.contains('.') && !name.starts_with("binder:") && !name.contains(' ')
+}
+
+fn attach_process_identity(obj: &mut Map<String, Value>, process_map: &HashMap<u32, ProcessIdentity>) {
+    if obj.contains_key("process_cmd") || process_map.is_empty() {
         return;
     }
     let Some(uid) = obj.get("uid").and_then(value_as_u32) else {
@@ -256,6 +403,26 @@ fn attach_socket_identity(
         if !proc.user.is_empty() {
             obj.insert("process_user".to_string(), json!(proc.user));
         }
+    }
+}
+
+fn attach_owner_fields(obj: &mut Map<String, Value>) {
+    if obj
+        .get("attribution_status")
+        .and_then(|v| v.as_str())
+        .is_some_and(|s| s == "stale_socket")
+    {
+        return;
+    }
+    if let Some(pkg) = obj.get("package_name").and_then(|v| v.as_str()) {
+        obj.insert("owner".to_string(), json!(pkg));
+        obj.insert("owner_type".to_string(), json!("package"));
+    } else if let Some(cmd) = obj.get("process_cmd").and_then(|v| v.as_str()) {
+        obj.insert("owner".to_string(), json!(cmd));
+        obj.insert("owner_type".to_string(), json!("process"));
+    } else {
+        obj.remove("owner");
+        obj.remove("owner_type");
     }
 }
 
@@ -390,6 +557,98 @@ mod tests {
         assert!(sock.get("package_name").is_none());
         assert_eq!(sock["process_cmd"], "keystore2");
         assert_eq!(sock["process_pid"], 659);
+        assert_eq!(sock["owner"], "keystore2");
+        assert_eq!(sock["owner_type"], "process");
+    }
+
+    #[test]
+    fn stale_socket_with_uid_zero_is_not_attributed_to_root() {
+        let mut network = json!({
+            "sockets": [{
+                "uid": 0,
+                "inode": 0,
+                "state": "LAST_ACK",
+                "protocol": "tcp6",
+                "remote_ipv4": "142.250.75.227"
+            }]
+        });
+        let mut process_map = HashMap::new();
+        process_map.insert(
+            0,
+            ProcessIdentity {
+                pid: 335,
+                cmd: "mivr_thread.mt6".to_string(),
+                user: "root".to_string(),
+            },
+        );
+        enrich_network_sockets(&mut network, &HashMap::new(), &process_map);
+        let sock = &network["sockets"][0];
+        assert_eq!(sock["attribution_status"], "stale_socket");
+        assert_eq!(sock["owner"], "unattributed (stale socket)");
+        assert!(sock.get("process_cmd").is_none());
+    }
+
+    #[test]
+    fn shared_system_uid_not_mapped_to_arbitrary_package() {
+        let packages = json!([{
+            "packages": [
+                {
+                    "package_name": "com.android.inputdevices",
+                    "appId": 1000,
+                    "sharedUser": "SharedUserSetting{5725ab7 android.uid.system/1000}"
+                },
+                {
+                    "package_name": "com.sec.android.app.parser",
+                    "appId": 1000,
+                    "uid": 1000
+                }
+            ]
+        }]);
+        let map = build_uid_package_map(&packages);
+        assert!(!map.contains_key(&1000));
+    }
+
+    #[test]
+    fn listener_socket_uses_peer_ip_display_not_wildcard() {
+        let mut network = json!({
+            "sockets": [{
+                "uid": 10097,
+                "state": "LISTEN",
+                "local_address": "[::]:40855",
+                "remote_address": "[::]:*",
+                "remote_ip": "::",
+                "remote_ip_role": "any",
+                "protocol": "tcp6"
+            }]
+        });
+        let mut uid_map = HashMap::new();
+        uid_map.insert(10097, "com.android.proxyhandler".to_string());
+        enrich_network_sockets(&mut network, &uid_map, &HashMap::new());
+        let sock = &network["sockets"][0];
+        assert_eq!(sock["socket_direction"], "listen");
+        assert_eq!(sock["peer_ip_display"], "(any)");
+        assert!(sock["peer_ip"].is_null());
+        assert_eq!(sock["owner"], "com.android.proxyhandler");
+    }
+
+    #[test]
+    fn enrich_network_socket_netstat_program_overrides_uid_package() {
+        let mut network = json!({
+            "sockets": [{
+                "uid": 10109,
+                "protocol": "tcp",
+                "remote_ip": "216.58.214.67",
+                "program_name": "com.real.app",
+                "program_pid": 4242
+            }]
+        });
+        let mut uid_map = HashMap::new();
+        uid_map.insert(10109, "com.wrong.app".to_string());
+        enrich_network_sockets(&mut network, &uid_map, &HashMap::new());
+        let sock = &network["sockets"][0];
+        assert_eq!(sock["package_name"], "com.real.app");
+        assert_eq!(sock["owner"], "com.real.app");
+        assert_eq!(sock["owner_type"], "package");
     }
 
     #[test]

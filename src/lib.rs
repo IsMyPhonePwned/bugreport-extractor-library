@@ -22,7 +22,10 @@ pub mod uid_package;
 pub use timeline::{
     export_timeline, export_timeline_value, BugreportFallbackTime, EventTimeBinding, TimelineExport,
 };
-pub use uid_package::{build_uid_package_map, enrich_parser_results, lookup_package, PER_USER_RANGE};
+pub use uid_package::{
+    build_uid_package_map, enrich_parser_results, is_app_linux_uid, lookup_package,
+    PER_USER_RANGE,
+};
 
 use timing::Instant;
 
