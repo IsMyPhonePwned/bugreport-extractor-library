@@ -504,6 +504,13 @@ pub fn enrich_parser_results(
         .unwrap_or_default();
 
     if uid_map.is_empty() && process_map.is_empty() {
+        for (pt, res, _) in results.iter_mut() {
+            if *pt == ParserType::Network {
+                if let Ok(v) = res {
+                    enrich_network_sockets(v, &uid_map, &process_map);
+                }
+            }
+        }
         return;
     }
 
