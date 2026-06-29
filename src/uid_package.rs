@@ -275,38 +275,68 @@ fn attach_socket_identity(
             json!("unattributed (stale socket)"),
         );
         obj.insert("owner_type".to_string(), json!("stale"));
-        return;
-    }
+    } else {
+        let netstat_program = obj
+            .get("program_name")
+            .and_then(|v| v.as_str())
+            .filter(|s| !s.is_empty())
+            .map(str::to_string);
+        let netstat_pid = obj.get("program_pid").and_then(value_as_u32);
 
-    let netstat_program = obj
-        .get("program_name")
-        .and_then(|v| v.as_str())
-        .filter(|s| !s.is_empty())
-        .map(str::to_string);
-    let netstat_pid = obj.get("program_pid").and_then(value_as_u32);
-
-    if let Some(program) = netstat_program {
-        // Netstat PID/Program is per-socket and overrides UID-based guesses.
-        obj.remove("package_name");
-        obj.remove("process_cmd");
-        obj.remove("process_pid");
-        if looks_like_package_name(&program) {
-            obj.insert("package_name".to_string(), json!(program));
-        } else {
-            obj.insert("process_cmd".to_string(), json!(program));
-            if let Some(pid) = netstat_pid {
-                obj.insert("process_pid".to_string(), json!(pid));
+        if let Some(program) = netstat_program {
+            // Netstat PID/Program is per-socket and overrides UID-based guesses.
+            obj.remove("package_name");
+            obj.remove("process_cmd");
+            obj.remove("process_pid");
+            if looks_like_package_name(&program) {
+                obj.insert("package_name".to_string(), json!(program));
+            } else {
+                obj.insert("process_cmd".to_string(), json!(program));
+                if let Some(pid) = netstat_pid {
+                    obj.insert("process_pid".to_string(), json!(pid));
+                }
             }
-        }
-    } else if !obj.contains_key("package_name") {
-        attach_package_name(obj, uid_map);
-        if !obj.contains_key("package_name") {
-            attach_process_identity(obj, process_map);
+        } else if !obj.contains_key("package_name") {
+            attach_package_name(obj, uid_map);
+            if !obj.contains_key("package_name") {
+                attach_process_identity(obj, process_map);
+            }
         }
     }
 
     annotate_listener_socket(obj);
+    annotate_peer_ip(obj);
     attach_owner_fields(obj);
+}
+
+fn is_terminal_tcp_state(state: &str) -> bool {
+    let compact: String = state
+        .chars()
+        .filter(|c| *c != '_' && *c != '-')
+        .collect();
+    matches!(
+        compact.as_str(),
+        "LASTACK" | "FINWAIT1" | "FINWAIT2" | "TIMEWAIT" | "CLOSEWAIT" | "CLOSING" | "CLOSE"
+    )
+}
+
+/// Set `peer_ip` for outbound sockets (UI should group on this, not wildcard remotes).
+fn annotate_peer_ip(obj: &mut Map<String, Value>) {
+    if obj.get("socket_direction").and_then(|v| v.as_str()) == Some("listen") {
+        return;
+    }
+    if obj.contains_key("peer_ip") && !obj.get("peer_ip").map(|v| v.is_null()).unwrap_or(false) {
+        return;
+    }
+    if let Some(v4) = obj.get("remote_ipv4").and_then(|v| v.as_str()) {
+        obj.insert("peer_ip".to_string(), json!(v4));
+        return;
+    }
+    if let Some(ip) = obj.get("remote_ip").and_then(|v| v.as_str()) {
+        if !is_wildcard_ip(ip) {
+            obj.insert("peer_ip".to_string(), json!(ip));
+        }
+    }
 }
 
 fn is_wildcard_ip(ip: &str) -> bool {
@@ -378,12 +408,17 @@ pub fn is_stale_unattributed_socket(obj: &Map<String, Value>) -> bool {
         socket_state_normalized(obj).as_str(),
         "LAST_ACK"
             | "FIN_WAIT1"
+            | "FIN_WAIT_1"
             | "FIN_WAIT2"
+            | "FIN_WAIT_2"
             | "TIME_WAIT"
             | "CLOSE_WAIT"
             | "CLOSING"
             | "CLOSE"
-    )
+    ) || obj
+        .get("state")
+        .and_then(|v| v.as_str())
+        .is_some_and(is_terminal_tcp_state)
 }
 
 fn looks_like_package_name(name: &str) -> bool {
@@ -420,6 +455,14 @@ fn attach_owner_fields(obj: &mut Map<String, Value>) {
     } else if let Some(cmd) = obj.get("process_cmd").and_then(|v| v.as_str()) {
         obj.insert("owner".to_string(), json!(cmd));
         obj.insert("owner_type".to_string(), json!("process"));
+    } else if obj
+        .get("attribution_status")
+        .and_then(|v| v.as_str())
+        .is_none()
+    {
+        obj.insert("attribution_status".to_string(), json!("unresolved"));
+        obj.insert("owner".to_string(), json!("unattributed"));
+        obj.insert("owner_type".to_string(), json!("unknown"));
     } else {
         obj.remove("owner");
         obj.remove("owner_type");
@@ -586,6 +629,23 @@ mod tests {
         assert_eq!(sock["attribution_status"], "stale_socket");
         assert_eq!(sock["owner"], "unattributed (stale socket)");
         assert!(sock.get("process_cmd").is_none());
+    }
+
+    #[test]
+    fn fin_wait_with_hyphens_detected_as_stale() {
+        let mut network = json!({
+            "sockets": [{
+                "state": "FIN-WAIT-1",
+                "inode": 0,
+                "remote_ip": "2a00:1450:4007:80c::200a",
+                "protocol": "tcp"
+            }]
+        });
+        enrich_network_sockets(&mut network, &HashMap::new(), &HashMap::new());
+        let sock = &network["sockets"][0];
+        assert_eq!(sock["attribution_status"], "stale_socket");
+        assert_eq!(sock["owner"], "unattributed (stale socket)");
+        assert_eq!(sock["peer_ip"], "2a00:1450:4007:80c::200a");
     }
 
     #[test]
