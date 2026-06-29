@@ -909,6 +909,72 @@ fn flatten_network(
                 }
             }
         }
+        if let Some(scan_results) = wifi.get("scan_results").and_then(|v| v.as_object()) {
+            for (section_name, networks_value) in scan_results {
+                let Some(networks) = networks_value.as_array() else {
+                    continue;
+                };
+                for net in networks {
+                    let Some(o) = net.as_object() else {
+                        continue;
+                    };
+                    let ssid = o.get("ssid").and_then(|x| x.as_str()).unwrap_or("");
+                    let bssid = o.get("bssid").and_then(|x| x.as_str()).unwrap_or("");
+                    let msg = if ssid.is_empty() {
+                        format!("WiFi scan result: {bssid} ({section_name})")
+                    } else {
+                        format!("WiFi scan result: {ssid} ({section_name})")
+                    };
+                    let mut ex = o.clone();
+                    ex.insert("scan_section".into(), json!(section_name));
+                    push_event(
+                        out,
+                        global,
+                        pb,
+                        msg,
+                        ctx.datetime.clone(),
+                        "wifi_scan_result",
+                        ctx.time_is_approximate,
+                        ParserType::Network,
+                        "android:bugreport:wifi_scan_result",
+                        binding,
+                        ex,
+                    );
+                }
+            }
+        }
+        if let Some(events) = wifi.get("scan_events").and_then(|a| a.as_array()) {
+            for ev in events {
+                let Some(o) = ev.as_object() else {
+                    continue;
+                };
+                let scan_type = o
+                    .get("event_type")
+                    .and_then(|x| x.as_str())
+                    .unwrap_or("scan");
+                let pkg = o.get("package").and_then(|x| x.as_str()).unwrap_or("");
+                let msg = if pkg.is_empty() {
+                    format!("WiFi scan event: {scan_type}")
+                } else {
+                    format!("WiFi scan event: {scan_type} ({pkg})")
+                };
+                let mut ex = o.clone();
+                ex.insert("scan_event_type".into(), json!(scan_type));
+                push_event(
+                    out,
+                    global,
+                    pb,
+                    msg,
+                    ctx.datetime.clone(),
+                    "wifi_scan_event",
+                    ctx.time_is_approximate,
+                    ParserType::Network,
+                    "android:bugreport:wifi_scan_event",
+                    binding,
+                    ex,
+                );
+            }
+        }
     }
 }
 
