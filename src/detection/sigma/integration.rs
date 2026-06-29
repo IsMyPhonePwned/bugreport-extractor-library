@@ -838,6 +838,15 @@ fn extract_network_entries(output: &Value) -> Option<Vec<LogEntry>> {
             if let Some(v) = sock.get("package_name").and_then(|v| v.as_str()) {
                 log_json["package_name"] = json!(v);
             }
+            if let Some(v) = sock.get("process_cmd").and_then(|v| v.as_str()) {
+                log_json["process_cmd"] = json!(v);
+            }
+            if let Some(v) = sock.get("process_pid").and_then(|v| v.as_u64()) {
+                log_json["process_pid"] = json!(v);
+            }
+            if let Some(v) = sock.get("process_user").and_then(|v| v.as_str()) {
+                log_json["process_user"] = json!(v);
+            }
             if let Some(v) = sock.get("inode").and_then(|v| v.as_u64()) {
                 log_json["inode"] = json!(v);
             }

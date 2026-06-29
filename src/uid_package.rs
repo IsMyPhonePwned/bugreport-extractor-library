@@ -1,4 +1,4 @@
-//! Map Android Linux UIDs to package names using [`ParserType::Package`] output.
+//! Map Android Linux UIDs to package names and process identities using parser output.
 
 use serde_json::{json, Map, Value};
 use std::collections::HashMap;
@@ -9,6 +9,17 @@ use crate::parsers::ParserType;
 
 /// Android multi-user UID range (user N app → N * 100_000 + appId).
 pub const PER_USER_RANGE: u32 = 100_000;
+
+const AID_APP_START: u32 = 10_000;
+const FIRST_ISOLATED_UID: u32 = 99_000;
+
+/// Process identity resolved from [`ParserType::Process`] output.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct ProcessIdentity {
+    pub pid: u32,
+    pub cmd: String,
+    pub user: String,
+}
 
 /// Build `full_linux_uid → package_name` from package parser JSON.
 pub fn build_uid_package_map(package_output: &Value) -> HashMap<u32, String> {
@@ -61,6 +72,108 @@ pub fn build_uid_package_map(package_output: &Value) -> HashMap<u32, String> {
     map
 }
 
+/// Build `linux_uid → process` from process parser JSON (`ps` / `top` user column).
+pub fn build_uid_process_map(process_output: &Value) -> HashMap<u32, ProcessIdentity> {
+    let mut by_uid: HashMap<u32, Vec<ProcessIdentity>> = HashMap::new();
+    let Some(processes) = process_output.as_array() else {
+        return HashMap::new();
+    };
+
+    for proc in processes {
+        let Some(pid) = proc.get("pid").and_then(value_as_u32) else {
+            continue;
+        };
+        let user = proc
+            .get("user")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let cmd = proc
+            .get("cmd")
+            .and_then(|v| v.as_str())
+            .unwrap_or_default();
+        let Some(uid) = parse_android_user_uid(user) else {
+            continue;
+        };
+        by_uid
+            .entry(uid)
+            .or_default()
+            .push(ProcessIdentity {
+                pid,
+                cmd: cmd.to_string(),
+                user: user.to_string(),
+            });
+    }
+
+    by_uid
+        .into_iter()
+        .map(|(uid, procs)| (uid, pick_representative_process(procs)))
+        .collect()
+}
+
+/// Parse an Android `ps` user column (`u0_a109`, `system`, …) into a Linux UID.
+pub fn parse_android_user_uid(user: &str) -> Option<u32> {
+    if let Some(rest) = user.strip_prefix('u') {
+        let (user_id_str, suffix) = rest.split_once('_')?;
+        let user_id: u32 = user_id_str.parse().ok()?;
+        let base = user_id.checked_mul(PER_USER_RANGE)?;
+
+        if let Some(offset) = suffix.strip_prefix('a').and_then(|s| s.parse::<u32>().ok()) {
+            return base.checked_add(AID_APP_START.checked_add(offset)?);
+        }
+        if let Some(offset) = suffix.strip_prefix('i').and_then(|s| s.parse::<u32>().ok()) {
+            return base.checked_add(FIRST_ISOLATED_UID.checked_add(offset)?);
+        }
+        if let Some(app_id) = named_android_app_id(suffix) {
+            return base.checked_add(app_id);
+        }
+        return None;
+    }
+
+    named_android_app_id(user)
+}
+
+fn named_android_app_id(name: &str) -> Option<u32> {
+    match name {
+        "root" => Some(0),
+        "system" => Some(1000),
+        "radio" | "phone" => Some(1001),
+        "bluetooth" => Some(1002),
+        "graphics" => Some(1003),
+        "input" => Some(1004),
+        "audio" => Some(1005),
+        "camera" => Some(1006),
+        "log" => Some(1007),
+        "compass" => Some(1008),
+        "mount" => Some(1009),
+        "wifi" => Some(1010),
+        "adb" => Some(1011),
+        "install" => Some(1012),
+        "media" => Some(1013),
+        "dhcp" => Some(1014),
+        "sdcard_rw" => Some(1015),
+        "vpn" => Some(1016),
+        "keystore" => Some(1017),
+        "nfc" => Some(1027),
+        "clat" => Some(1029),
+        "media_rw" => Some(1023),
+        "drm" => Some(1019),
+        "shell" => Some(2000),
+        "nobody" => Some(9999),
+        _ => None,
+    }
+}
+
+fn pick_representative_process(mut procs: Vec<ProcessIdentity>) -> ProcessIdentity {
+    if let Some(idx) = procs
+        .iter()
+        .position(|p| p.cmd.contains('.') && !p.cmd.contains(' '))
+    {
+        return procs.remove(idx);
+    }
+    procs.sort_by_key(|p| p.pid);
+    procs.into_iter().next().expect("non-empty process list")
+}
+
 fn value_as_u32(v: &Value) -> Option<u32> {
     v.as_u64()
         .and_then(|n| u32::try_from(n).ok())
@@ -72,8 +185,20 @@ pub fn lookup_package(uid_map: &HashMap<u32, String>, uid: u32) -> Option<&str> 
     uid_map.get(&uid).map(String::as_str)
 }
 
-/// Add `package_name` to each socket when `uid` is known in the map.
-pub fn enrich_network_sockets(network: &mut Value, uid_map: &HashMap<u32, String>) {
+/// Resolve a Linux UID to a process identity.
+pub fn lookup_process(
+    process_map: &HashMap<u32, ProcessIdentity>,
+    uid: u32,
+) -> Option<&ProcessIdentity> {
+    process_map.get(&uid)
+}
+
+/// Add `package_name` or process fields to each socket when resolvable.
+pub fn enrich_network_sockets(
+    network: &mut Value,
+    uid_map: &HashMap<u32, String>,
+    process_map: &HashMap<u32, ProcessIdentity>,
+) {
     let Some(sockets) = network
         .as_object_mut()
         .and_then(|o| o.get_mut("sockets"))
@@ -86,7 +211,7 @@ pub fn enrich_network_sockets(network: &mut Value, uid_map: &HashMap<u32, String
         let Some(obj) = sock.as_object_mut() else {
             continue;
         };
-        attach_package_name(obj, uid_map);
+        attach_socket_identity(obj, uid_map, process_map);
     }
 }
 
@@ -108,6 +233,32 @@ pub fn enrich_logcat_events(logcat: &mut Value, uid_map: &HashMap<u32, String>) 
     }
 }
 
+fn attach_socket_identity(
+    obj: &mut Map<String, Value>,
+    uid_map: &HashMap<u32, String>,
+    process_map: &HashMap<u32, ProcessIdentity>,
+) {
+    if !obj.contains_key("package_name") {
+        attach_package_name(obj, uid_map);
+    }
+    if obj.contains_key("package_name")
+        || obj.contains_key("process_cmd")
+        || process_map.is_empty()
+    {
+        return;
+    }
+    let Some(uid) = obj.get("uid").and_then(value_as_u32) else {
+        return;
+    };
+    if let Some(proc) = lookup_process(process_map, uid) {
+        obj.insert("process_cmd".to_string(), json!(proc.cmd));
+        obj.insert("process_pid".to_string(), json!(proc.pid));
+        if !proc.user.is_empty() {
+            obj.insert("process_user".to_string(), json!(proc.user));
+        }
+    }
+}
+
 fn attach_package_name(obj: &mut Map<String, Value>, uid_map: &HashMap<u32, String>) {
     if obj.contains_key("package_name") {
         return;
@@ -120,7 +271,7 @@ fn attach_package_name(obj: &mut Map<String, Value>, uid_map: &HashMap<u32, Stri
     }
 }
 
-/// After concurrent parsing, enrich network/logcat JSON using package UID map when available.
+/// After concurrent parsing, enrich network/logcat JSON using package and process maps.
 pub fn enrich_parser_results(
     results: &mut [(
         ParserType,
@@ -135,14 +286,21 @@ pub fn enrich_parser_results(
         .map(build_uid_package_map)
         .unwrap_or_default();
 
-    if uid_map.is_empty() {
+    let process_map = results
+        .iter()
+        .find(|(pt, _, _)| *pt == ParserType::Process)
+        .and_then(|(_, res, _)| res.as_ref().ok())
+        .map(build_uid_process_map)
+        .unwrap_or_default();
+
+    if uid_map.is_empty() && process_map.is_empty() {
         return;
     }
 
     for (pt, res, _) in results.iter_mut() {
         if let Ok(v) = res {
             match pt {
-                ParserType::Network => enrich_network_sockets(v, &uid_map),
+                ParserType::Network => enrich_network_sockets(v, &uid_map, &process_map),
                 ParserType::Logcat => enrich_logcat_events(v, &uid_map),
                 _ => {}
             }
@@ -176,16 +334,83 @@ mod tests {
     }
 
     #[test]
+    fn parse_android_user_uid_app_and_system() {
+        assert_eq!(parse_android_user_uid("u0_a109"), Some(10_109));
+        assert_eq!(parse_android_user_uid("u10_a109"), Some(1_010_109));
+        assert_eq!(parse_android_user_uid("system"), Some(1000));
+        assert_eq!(parse_android_user_uid("u0_system"), Some(1000));
+    }
+
+    #[test]
+    fn build_uid_process_map_prefers_package_like_cmd() {
+        let processes = json!([
+            {"pid": 200, "user": "u0_a109", "cmd": "binder:200_1"},
+            {"pid": 100, "user": "u0_a109", "cmd": "com.example.app"}
+        ]);
+        let map = build_uid_process_map(&processes);
+        let proc = map.get(&10_109).expect("uid mapped");
+        assert_eq!(proc.cmd, "com.example.app");
+        assert_eq!(proc.pid, 100);
+    }
+
+    #[test]
     fn enrich_network_socket_adds_package_name() {
         let mut network = json!({
             "sockets": [{"uid": 10333, "protocol": "tcp"}]
         });
         let mut map = HashMap::new();
         map.insert(10333, "com.example.app".to_string());
-        enrich_network_sockets(&mut network, &map);
+        enrich_network_sockets(&mut network, &map, &HashMap::new());
         assert_eq!(
             network["sockets"][0]["package_name"],
             "com.example.app"
         );
+    }
+
+    #[test]
+    fn enrich_network_socket_falls_back_to_process() {
+        let mut network = json!({
+            "sockets": [{
+                "uid": 1017,
+                "protocol": "tcp",
+                "remote_ip": "64:ff9b::253b:1955"
+            }]
+        });
+        let mut process_map = HashMap::new();
+        process_map.insert(
+            1017,
+            ProcessIdentity {
+                pid: 659,
+                cmd: "keystore2".to_string(),
+                user: "u0_system".to_string(),
+            },
+        );
+        enrich_network_sockets(&mut network, &HashMap::new(), &process_map);
+        let sock = &network["sockets"][0];
+        assert!(sock.get("package_name").is_none());
+        assert_eq!(sock["process_cmd"], "keystore2");
+        assert_eq!(sock["process_pid"], 659);
+    }
+
+    #[test]
+    fn enrich_network_socket_package_takes_priority_over_process() {
+        let mut network = json!({
+            "sockets": [{"uid": 10109, "protocol": "tcp"}]
+        });
+        let mut uid_map = HashMap::new();
+        uid_map.insert(10109, "com.example.app".to_string());
+        let mut process_map = HashMap::new();
+        process_map.insert(
+            10109,
+            ProcessIdentity {
+                pid: 1,
+                cmd: "com.example.app".to_string(),
+                user: "u0_a109".to_string(),
+            },
+        );
+        enrich_network_sockets(&mut network, &uid_map, &process_map);
+        let sock = &network["sockets"][0];
+        assert_eq!(sock["package_name"], "com.example.app");
+        assert!(sock.get("process_cmd").is_none());
     }
 }

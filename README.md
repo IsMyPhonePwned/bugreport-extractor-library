@@ -121,6 +121,7 @@ Extracts network connectivity and statistics.
   - TCP/UDP sockets with local/remote addresses and ports
   - Connection state, UID, inode
   - **`package_name`**: Resolved from UID when Package parser output is available (post-parse enrichment)
+  - **`process_cmd` / `process_pid`**: Fallback from Process parser when the socket UID has no matching package (e.g. `keystore2`, `system_server`)
   - Receive/send queue sizes
 - **Network interfaces**: 
   - Interface names, IP addresses (IPv4/IPv6)
@@ -187,7 +188,7 @@ Extracts privacy-related settings from the bugreport (location providers, permis
 
 Each parser extracts data from specific sections within the dumpstate file, and some parsers may gather information from multiple sections to provide a complete picture.
 
-After parsing, **`enrich_parser_results`** maps Linux UIDs to package names on **network sockets** and **logcat events** when Package parser output is present in the same run (normal and comparison modes).
+After parsing, **`enrich_parser_results`** maps Linux UIDs to package names on **network sockets** and **logcat events** when Package parser output is present in the same run (normal and comparison modes). When no package matches, network sockets are linked to a **process** (`process_cmd`, `process_pid`) if the Process parser ran in the same pass.
 
 ## Timeline JSONL export
 

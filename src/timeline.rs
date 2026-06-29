@@ -827,7 +827,16 @@ fn flatten_network(
                 let proto = o.get("protocol").and_then(|x| x.as_str()).unwrap_or("");
                 let la = o.get("local_address").and_then(|x| x.as_str()).unwrap_or("");
                 let ra = o.get("remote_address").and_then(|x| x.as_str()).unwrap_or("");
-                let msg = format!("Socket {proto} {la} -> {ra}");
+                let owner = o
+                    .get("package_name")
+                    .and_then(|x| x.as_str())
+                    .or_else(|| o.get("process_cmd").and_then(|x| x.as_str()))
+                    .unwrap_or("");
+                let msg = if owner.is_empty() {
+                    format!("Socket {proto} {la} -> {ra}")
+                } else {
+                    format!("Socket {proto} {la} -> {ra} ({owner})")
+                };
                 push_event(
                     out,
                     global,
